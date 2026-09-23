@@ -20,8 +20,8 @@ function world() {
   window.postMessage=data=>queueMicrotask(()=>deliver(data));
   const api={instances:[],me:()=>({combatant:true}),tick:()=>100,rules(){},order(){}};window.werhd=api;
   const common={window,location:{origin:'https://ra2web.github.io'},crypto,DOMException,AbortController,setTimeout,clearTimeout,setInterval:fn=>{intervals.set(++intervalId,fn);return intervalId;},clearInterval:id=>intervals.delete(id)};
-  const page=vm.createContext({...common}),content=vm.createContext({...common,document:{},chrome:{runtime:{onMessage:{addListener:fn=>{contentListener=fn;}},sendMessage:async message=>{
-    sent.push(message);if(message.type==='PUBLIC_CONFIG')return {ok:true,value:{hotkey:'Alt+Shift+J'}};
+  const page=vm.createContext({...common}),content=vm.createContext({...common,document:{addEventListener(){}},chrome:{runtime:{onMessage:{addListener:fn=>{contentListener=fn;}},sendMessage:async message=>{
+    sent.push(message);if(message.type==='PUBLIC_CONFIG')return {ok:true,value:{hotkey:'Alt+Shift+J',showOverlay:false}};
     if(message.type==='DECIDE')return new Promise(resolve=>{resolveDecision=resolve;});return {ok:true,value:{}};
   }}}});
   vm.runInContext(contentSource,content);vm.runInContext(pageSource,page);

@@ -21,7 +21,7 @@ function translate(){
 }
 function keyPlaceholder(){$('api-key').placeholder=tr(config.hasKey?'keySaved':'keyEmpty');$('clear-key').hidden=!config.hasKey;}
 function displayConfig(){
- $('api-base').value=config.apiBase;$('model').value=config.model;$('hotkey').value=config.hotkey;$('budget').value=config.maxDecisions;$('auto-camera').checked=config.autoCamera;keyPlaceholder();
+ $('api-base').value=config.apiBase;$('model').value=config.model;$('hotkey').value=config.hotkey;$('budget').value=config.maxDecisions;$('auto-camera').checked=config.autoCamera;$('show-overlay').checked=config.showOverlay;keyPlaceholder();
 }
 function renderAwareness(s){
  const o=s.observation;$('awareness').hidden=!o;$('no-battle').hidden=!!o;
@@ -86,12 +86,17 @@ $('test-connection').addEventListener('click',async()=>{
  if(dirty){notify('saveFirst');return;}$('test-connection').disabled=true;notify('testing');
  try{const result=await rpc({type:'TEST_CONNECTION'});notify('tested',true,{ms:result.latencyMs});}catch(e){notice(e.message);}finally{$('test-connection').disabled=false;}
 });
-$('settings').addEventListener('input',()=>{dirty=true;if(lastStatus)displayStatus(lastStatus);});
+$('show-overlay').addEventListener('change',async()=>{
+ const input=$('show-overlay');input.disabled=true;
+ try{const result=await rpc({type:'SET_OVERLAY',showOverlay:input.checked});config.showOverlay=result.showOverlay;notify(config.showOverlay?'overlayEnabled':'overlayDisabled',true);}
+ catch(e){input.checked=config.showOverlay;notice(e.message);}finally{input.disabled=false;}
+});
+$('settings').addEventListener('input',e=>{if(e.target.id==='show-overlay')return;dirty=true;if(lastStatus)displayStatus(lastStatus);});
 $('hotkey').addEventListener('keydown',e=>{if(e.key==='Tab')return;e.preventDefault();const value=hotkeyFromEvent(e);if(value){$('hotkey').value=value;dirty=true;$('start').disabled=true;notify('hotkeyChanged',true);}});
 $('settings').addEventListener('submit',async e=>{
  e.preventDefault();
  try{
-  const input={language:config.language,apiKey:$('api-key').value.trim(),apiBase:$('api-base').value,model:$('model').value,hotkey:$('hotkey').value,autoCamera:$('auto-camera').checked,maxDecisions:Number($('budget').value)};validateSettings(input);
+  const input={language:config.language,apiKey:$('api-key').value.trim(),apiBase:$('api-base').value,model:$('model').value,hotkey:$('hotkey').value,autoCamera:$('auto-camera').checked,showOverlay:$('show-overlay').checked,maxDecisions:Number($('budget').value)};validateSettings(input);
   if(!await chrome.permissions.request({origins:[originPattern(input.apiBase)]}))throw new Error('未获得 API 访问授权，设置未保存。');
   config=await rpc({type:'SAVE_SETTINGS',settings:input});$('api-key').value='';dirty=false;displayConfig();notify('saved',true);await refresh();
  }catch(error){notice(error.message);}

@@ -1,5 +1,6 @@
 import {t,errorText} from './i18n.mjs';
 import {CHANNEL, DEFAULTS, hotkeyFromEvent} from './shared.mjs';
+import {createOverlayMonitor,createOverlayView} from './overlay.mjs';
 
 if (!globalThis.__werhdJevContent) {
   globalThis.__werhdJevContent = true;
@@ -9,10 +10,16 @@ if (!globalThis.__werhdJevContent) {
     if(!response?.ok)throw new Error(response?.error||'扩展后台未响应，请重新加载插件后刷新游戏页面。');
     return response.value;
   };
-  rpc({type:'PUBLIC_CONFIG'}).then(c=>{hotkey=c.hotkey;language=c.language??DEFAULTS.language;}).catch(()=>{});
+  const overlay=createOverlayMonitor({rpc,createView:createOverlayView});
+  const configure=c=>{hotkey=c.hotkey??hotkey;language=c.language??language;overlay.configure({hotkey,language,showOverlay:c.showOverlay??DEFAULTS.showOverlay});};
+  rpc({type:'PUBLIC_CONFIG'}).then(configure).catch(()=>{});
+  document.addEventListener('visibilitychange',()=>overlay.setActive(document.visibilityState!=='hidden'));
+  window.addEventListener('pagehide',()=>overlay.setActive(false));
+  window.addEventListener('pageshow',()=>overlay.setActive(document.visibilityState!=='hidden'));
   chrome.runtime.onMessage.addListener((m,_sender,respond)=>{
     if(m.type==='BIND_SESSION'){token=m.token;respond({ok:true});}
-    if(m.type==='CONFIG_CHANGED'){hotkey=m.hotkey;language=m.language??language;respond({ok:true});}
+    if(m.type==='CONFIG_CHANGED'){configure(m);respond({ok:true});}
+    if(m.type==='OVERLAY_CHANGED'){overlay.changed(m.running===true);respond({ok:true});}
   });
   window.addEventListener('message',async event=>{
     const m=event.data;
@@ -20,6 +27,7 @@ if (!globalThis.__werhdJevContent) {
     if(!['DECIDE','EVENT'].includes(m.type))return;
     try {
       const value=await rpc({type:m.type,token,body:m.body,event:m.event});
+      if(m.type==='EVENT' && m.event?.kind==='stop' && m.token===token)overlay.changed(false);
       if(m.id)window.postMessage({channel:CHANNEL,direction:'to-page',token,id:m.id,ok:true,value},location.origin);
     } catch(e) {
       if(m.id)window.postMessage({channel:CHANNEL,direction:'to-page',token,id:m.id,ok:false,error:e.message},location.origin);
@@ -37,6 +45,6 @@ if (!globalThis.__werhdJevContent) {
     if(!event.isTrusted || event.repeat || event.isComposing || target?.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target?.tagName))return;
     if(hotkeyFromEvent(event)!==hotkey)return;
     event.preventDefault();event.stopImmediatePropagation();
-    rpc({type:'HOTKEY_TOGGLE'}).then(s=>toast(t(language,s.running?'toastOn':'toastOff')),e=>toast(errorText(language,e.message)));
+    rpc({type:'HOTKEY_TOGGLE'}).then(s=>{overlay.changed(s.running);toast(t(language,s.running?'toastOn':'toastOff'));},e=>toast(errorText(language,e.message)));
   },true);
 }

@@ -1,4 +1,12 @@
 export const messages = {
+ showOverlay:['托管时显示悬浮状态窗','Show floating status while autopilot runs'],
+ overlayHint:['立即保存。仅在托管开启时显示；停止托管后自动隐藏。关闭展示不影响托管。','Saved immediately. Visible only during autopilot; hidden when stopped. Hiding it does not stop control.'],
+ overlayEnabled:['已允许悬浮状态窗，开启托管时显示。','Floating status enabled. It appears while autopilot runs.'],
+ overlayDisabled:['已隐藏悬浮状态窗，托管状态不变。','Floating status hidden. Autopilot is unchanged.'],
+ overlayDrag:['拖动标题移动；聚焦后可用方向键移动','Drag the title to move, or focus it and use arrow keys'],
+ overlayCollapse:['收起状态窗','Collapse status'],overlayExpand:['展开状态窗','Expand status'],
+ helpOverlay:['游戏内悬浮状态','In-game floating status'],
+ helpOverlayText:['默认允许展示，但仅在托管开启时出现。显示托管状态、模型回答数、资金、响应耗时与停止快捷键；可拖动标题或聚焦后用方向键移动，也可收起。快捷键、停止按钮、对局结束都会同步隐藏。在设置中关闭「托管时显示悬浮状态窗」会立即隐藏并保存，不会停止托管。状态更新不额外调用模型。','Enabled by default, but appears only while autopilot runs. Shows control status, model replies, credits, response time and the stop shortcut. Drag the title or focus it and use arrow keys to move; collapse it for a compact view. It hides when control stops via shortcut, Stop or match end. Disable “Show floating status while autopilot runs” in Settings to hide it immediately without stopping autopilot. Status updates do not call the model.'],
  officialWebsite:['王二火大','wannafire'],officialWebsiteHint:['访问王二火大官网','Visit the wannafire official website'],
  brand:['王二火大 · PLAYER AI','WannaFire · PLAYER AI'],title:['Jev 对局托管','Jev Autopilot'],
  battlefield:['战场','Battlefield'],trends:['趋势','Trends'],settings:['设置','Settings'],

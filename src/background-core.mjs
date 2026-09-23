@@ -11,6 +11,13 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
   const key = tabId => `session:${tabId}`;
   const getSession = async tabId => (await c.storage.session.get(key(tabId)))[key(tabId)];
   const getSettings = async () => ({...DEFAULTS,...(await c.storage.local.get('settings')).settings});
+  const contentConfig = s => ({hotkey:s.hotkey,language:s.language,showOverlay:s.showOverlay});
+  const notifyOverlay = async s => {
+    if(s?.documentId)await c.tabs.sendMessage(s.tabId,{type:'OVERLAY_CHANGED',running:s.running},{documentId:s.documentId}).catch(()=>{});
+  };
+  const broadcastConfig = async settings => {
+    for(const tab of await c.tabs.query({}))if(supportedGame(tab.url))await c.tabs.sendMessage(tab.id,{type:'CONFIG_CHANGED',...contentConfig(settings)}).catch(()=>{});
+  };
   function serial(map, id, task) {
     const next = (map.get(id) ?? Promise.resolve()).catch(()=>{}).then(task);
     map.set(id,next); next.finally(()=>{if(map.get(id)===next)map.delete(id);}).catch(()=>{});
@@ -36,6 +43,7 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
   async function stop(tabId, reason='manual') {
     inflight.get(tabId)?.abort();
     const s=await patch(tabId,s=>s?{...s,running:false,busyUntil:0,reason,updatedAt:now()}:undefined);
+    await notifyOverlay(s);
     if(s)await pageCall(tabId,'stop',reason,s.documentId).catch(()=>{});
     await badge(tabId,'');
     return {running:false,reason};
@@ -73,6 +81,7 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
       const result=await pageCall(tabId,'start',{token:session.token,maxDecisions:config.maxDecisions,autoCamera:config.autoCamera},documentId);
       if(!result?.running)throw new Error(result?.error || '托管未能启动。');
       await badge(tabId,'ON');
+      await notifyOverlay(await getSession(tabId));
       return result;
     } catch(e) { await stop(tabId,'start_failed');throw e; }
   }
@@ -140,13 +149,24 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
       if(e.kind==='error')next.error=String(e.message).slice(0,240);
       return next;
     });
-    if(e.kind==='stop'){inflight.get(tabId)?.abort();await badge(tabId,'');}
+    if(e.kind==='stop'){inflight.get(tabId)?.abort();await notifyOverlay(await getSession(tabId));await badge(tabId,'');}
     return {ok:true};
   }
   async function handle(message,sender) {
     await ready;
     if(!message || typeof message.type!=='string')throw new Error('消息无效。');
-    if(message.type==='PUBLIC_CONFIG'){const s=await getSettings();return {hotkey:s.hotkey,language:s.language};}
+    if(message.type==='PUBLIC_CONFIG')return contentConfig(await getSettings());
+    if(message.type==='OVERLAY_STATUS'){
+      if(sender.id!==c.runtime.id || !sender.tab || sender.frameId!==0 || !supportedGame(sender.url))throw new Error('不支持此游戏页面。');
+      const config=contentConfig(await getSettings()),s=await getSession(sender.tab.id);
+      // Content scripts can read only their own active document's display fields.
+      // No credentials, session tokens, event payloads or game injection in this path.
+      if(!config.showOverlay || !s?.running || s.documentId!==sender.documentId || s.origin!==new URL(sender.url).origin)return {...config,running:false};
+      const live=await pageCall(sender.tab.id,'status',null,s.documentId).catch(()=>null);
+      const current=await getSession(sender.tab.id);
+      if(!live?.running || !live.available || !current?.running || current.token!==s.token)return {...config,running:false};
+      return {...config,running:true,decisions:current.decisions??0,credits:current.credits,latencyMs:current.latencyMs,lastTick:current.lastTick,failures:current.failures??0};
+    }
     if(message.type==='DECIDE')return decide(message,sender);
     if(message.type==='EVENT')return event(message,sender);
     if(message.type==='HOTKEY_TOGGLE'){
@@ -155,11 +175,13 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
     }
     if(!trustExtension(sender))throw new Error('此操作只允许在插件窗口中执行。');
     if(message.type==='GET_SETTINGS')return publicSettings(await getSettings());
-    if(message.type==='SET_LANGUAGE'){
-      const settings=await getSettings();settings.language=message.language==='en'?'en':'zh-CN';
+    if(message.type==='SET_LANGUAGE' || message.type==='SET_OVERLAY'){
+      const settings=await getSettings();
+      if(message.type==='SET_LANGUAGE')settings.language=message.language==='en'?'en':'zh-CN';
+      else settings.showOverlay=message.showOverlay===true;
       await c.storage.local.set({settings});
-      for(const tab of await c.tabs.query({}))if(supportedGame(tab.url))await c.tabs.sendMessage(tab.id,{type:'CONFIG_CHANGED',hotkey:settings.hotkey,language:settings.language}).catch(()=>{});
-      return {language:settings.language};
+      await broadcastConfig(settings);
+      return message.type==='SET_LANGUAGE'?{language:settings.language}:{showOverlay:settings.showOverlay};
     }
     if(message.type==='TEST_CONNECTION'){
       if(probing)throw new Error('连接测试正在进行，请稍候。');
@@ -185,7 +207,7 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
       if(!await c.permissions.contains({origins:[originPattern(config.apiBase)]}))throw new Error('API 访问权限未获授权。');
       if(config.apiKey!==prior.apiKey || config.apiBase!==prior.apiBase || config.model!==prior.model){for(const s of Object.values(await c.storage.session.get(null)))if(s?.running)await stop(s.tabId,'settings_changed');}
       await c.storage.local.set({settings:config});
-      for(const tab of await c.tabs.query({}))if(supportedGame(tab.url))await c.tabs.sendMessage(tab.id,{type:'CONFIG_CHANGED',hotkey:config.hotkey,language:config.language}).catch(()=>{});
+      await broadcastConfig(config);
       return publicSettings(config);
     }
     if(message.type==='CLEAR_KEY'){

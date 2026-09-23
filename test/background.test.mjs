@@ -101,3 +101,34 @@ test('language changes preserve a running session and credentials and are truste
  assert.deepEqual(result,{language:'en'});assert.equal(x.data.local.settings.apiKey,'test-only-secret');assert.equal((await x.app.getSession(7)).running,true);
  assert.equal(x.messages.at(-1).language,'en');assert.doesNotMatch(JSON.stringify(result),/test-only-secret/);
 });
+
+test('overlay status is read-only, document-scoped and never exposes credentials or raw events',async()=>{
+ const x=await setup(async()=>assert.fail('overlay must not request the model'));
+ x.data.session['session:7']={...x.data.session['session:7'],credits:4200,events:[{text:'private payload'}]};
+ const count=x.scripts.length;
+ const status=await x.app.handle({type:'OVERLAY_STATUS',tabId:999},sender);
+ assert.equal(status.running,true);assert.equal(status.credits,4200);assert.equal(status.showOverlay,true);
+ assert.doesNotMatch(JSON.stringify(status),/test-only-secret|token|documentId|origin|events|private payload|apiBase|model/);
+ assert.ok(x.scripts.slice(count).every(s=>s.args?.[0]==='status'));
+ for(const other of [{...sender,frameId:1},{...sender,id:'other-extension'},{...sender,url:'https://evil.test/'},extension])await assert.rejects(x.app.handle({type:'OVERLAY_STATUS'},other));
+ for(const other of [{...sender,documentId:'old-document'},{...sender,tab:{id:8}},{...sender,url:'https://ra2web.github.io/'}])assert.equal((await x.app.handle({type:'OVERLAY_STATUS'},other)).running,false);
+ await x.app.handle({type:'HOTKEY_TOGGLE'},sender);assert.equal(x.messages.at(-1).type,'OVERLAY_CHANGED');assert.equal(x.messages.at(-1).running,false);
+ assert.equal((await x.app.handle({type:'OVERLAY_STATUS'},sender)).running,false);
+ await x.app.handle({type:'HOTKEY_TOGGLE'},sender);assert.equal(x.messages.at(-1).running,true);
+});
+
+test('display preference applies immediately, persists, and never stops or starts control',async()=>{
+ const x=await setup(async()=>answer());const original=await x.app.getSession(7);
+ await assert.rejects(x.app.handle({type:'SET_OVERLAY',showOverlay:false},sender));
+ await x.app.handle({type:'SET_OVERLAY',showOverlay:false},extension);
+ assert.equal(x.messages.at(-1).showOverlay,false);assert.deepEqual(await x.app.getSession(7),original);
+ assert.equal((await x.app.handle({type:'OVERLAY_STATUS'},sender)).running,false);
+ const restarted=createBackground(x.c,{fetchImpl:async()=>assert.fail('must not fetch')});
+ assert.equal((await restarted.handle({type:'GET_SETTINGS'},extension)).showOverlay,false);
+ await restarted.handle({type:'SET_OVERLAY',showOverlay:true},extension);assert.equal((await restarted.getSession(7)).running,true);
+ assert.equal((await restarted.handle({type:'OVERLAY_STATUS'},sender)).running,true);
+ await restarted.handle({type:'EVENT',token:original.token,event:{kind:'stop',reason:'battle_ended'}},sender);
+ assert.equal(x.messages.at(-1).running,false);
+ await restarted.handle({type:'SET_OVERLAY',showOverlay:true},extension);assert.equal((await restarted.getSession(7)).running,false);
+ assert.equal((await restarted.handle({type:'OVERLAY_STATUS'},sender)).running,false);
+});

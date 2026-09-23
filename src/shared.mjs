@@ -1,4 +1,4 @@
-export const DEFAULTS = Object.freeze({ apiBase: 'https://api.typesafe.ai/v1', model: 'jev-latest', hotkey: 'Alt+Shift+J', autoCamera: true, maxDecisions: 2000, language:'zh-CN' });
+export const DEFAULTS = Object.freeze({ apiBase: 'https://api.typesafe.ai/v1', model: 'jev-latest', hotkey: 'Alt+Shift+J', autoCamera: true, showOverlay: true, maxDecisions: 2000, language:'zh-CN' });
 export const GAME_HOSTS = ['ra2web.github.io', 'staging.wangerhuoda.com', 'wangerhuoda.com', 'www.wangerhuoda.com'];
 export const CHANNEL = 'werhd-jev-extension-v1';
 export function supportedGame(url) {
@@ -33,12 +33,13 @@ export function validateSettings(input, prior = {}) {
   s.maxDecisions = Number(s.maxDecisions);
   if (!Number.isInteger(s.maxDecisions) || s.maxDecisions < 1 || s.maxDecisions > 10000) throw new Error('每局决策上限应为 1–10000。');
   s.autoCamera = Boolean(s.autoCamera);
+  s.showOverlay = Boolean(s.showOverlay);
   s.language = s.language === 'en' ? 'en' : 'zh-CN';
   s.apiKey = String(s.apiKey ?? '').trim();
   if (s.apiKey.length > 4096 || /[\r\n]/.test(s.apiKey)) throw new Error('密钥格式无效。');
   return s;
 }
-export const publicSettings = s => ({apiBase:s.apiBase, model:s.model, hotkey:s.hotkey, autoCamera:s.autoCamera, maxDecisions:s.maxDecisions, language:s.language??DEFAULTS.language, hasKey:!!s.apiKey});
+export const publicSettings = s => ({apiBase:s.apiBase, model:s.model, hotkey:s.hotkey, autoCamera:s.autoCamera, showOverlay:s.showOverlay??DEFAULTS.showOverlay, maxDecisions:s.maxDecisions, language:s.language??DEFAULTS.language, hasKey:!!s.apiKey});
 export function prepareQuestions(body) {
   if (!body || JSON.stringify(body).length > 256000 || !body.state || typeof body.state !== 'object' || Array.isArray(body.state)) throw new Error('战况请求格式或大小无效。');
   const entries = Object.entries(body.groups ?? {});

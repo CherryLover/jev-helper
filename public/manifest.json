@@ -1,0 +1,60 @@
+{
+  "manifest_version": 3,
+  "name": "王二火大 WannaFire · Jev",
+  "description": "王二火大 / WannaFire — Jev autopilot, live battlefield awareness and decision/economy charts. 中文 / English.",
+  "version": "0.2.1",
+  "minimum_chrome_version": "120",
+  "permissions": [
+    "storage",
+    "scripting",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://api.typesafe.ai/*",
+    "https://ra2web.github.io/*",
+    "https://staging.wangerhuoda.com/*",
+    "https://wangerhuoda.com/*",
+    "https://www.wangerhuoda.com/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "王二火大 WannaFire · Jev",
+    "default_icon": {
+      "16": "icons/16.png",
+      "32": "icons/32.png"
+    }
+  },
+  "icons": {
+    "16": "icons/16.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://ra2web.github.io/*",
+        "https://staging.wangerhuoda.com/*",
+        "https://wangerhuoda.com/*",
+        "https://www.wangerhuoda.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none'"
+  }
+}

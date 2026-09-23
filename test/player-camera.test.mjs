@@ -1,0 +1,21 @@
+import assert from 'node:assert/strict';
+import { updateCamera } from '../src/player/werhd-jev-camera.mjs';
+const moves=[],events=[];
+const base={id:1,name:'YARD',type:2,tile:{rx:10,ry:10}};
+const soldier={id:2,name:'TANK',type:7,primaryWeapon:{},tile:{rx:20,ry:20}};
+let enemies=[{id:3,primaryWeapon:{},tile:{rx:22,ry:21}}];
+const api={ units:r=>r==='self'?[base,soldier]:enemies, ObjectType:{Building:2}, tick:()=>100,
+  camera:{centerAt:(x,y)=>{moves.push([x,y]);return true}} };
+const memory={autoCamera:true,mission:{ids:[2]}};
+updateCamera(api,{YARD:{yard:true}},memory,e=>events.push(e),1000);
+assert.deepEqual(moves,[[22,21]],'follow an observed engagement without selecting units');
+updateCamera(api,{YARD:{yard:true}},memory,e=>events.push(e),2000);
+assert.equal(moves.length,1,'do not jump camera every micro tick');
+enemies=[];memory.lastPlaced={x:6,y:8,tick:100};
+updateCamera(api,{YARD:{yard:true}},memory,e=>events.push(e),7000);
+assert.deepEqual(moves.at(-1),[6,8]);
+memory.autoCamera=false;
+updateCamera(api,{},memory,e=>events.push(e),14000);
+assert.equal(moves.length,2,'turning auto camera off must leave the view alone');
+assert.deepEqual(events.map(e=>e.description),['观察交战','观察新建筑']);
+console.log('Player camera direction: combat/building focus, minimum dwell and opt-out passed');

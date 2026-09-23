@@ -1,0 +1,4 @@
+:root{font-family:system-ui,-apple-system,"PingFang SC",sans-serif;color:#dce7e5;background:#111b24;font-size:15px;line-height:1.85}body{margin:0}main{max-width:760px;margin:60px auto;padding:0 32px 60px}.eyebrow{color:#d9b76f;font-size:12px;letter-spacing:3px}h1{font-size:34px;line-height:1.4;color:#f1eadb}h2{font-size:20px;margin-top:32px}p,li{color:#aebfc3}li{padding-left:7px;margin:14px 0}a{color:#dfbe79}code,kbd{font-family:ui-monospace,monospace;color:#e3cc9f;background:#23313b;border-radius:4px;padding:3px 6px;font-size:13px}
+nav{display:flex;gap:8px;justify-content:flex-end}button{border:1px solid #3b4750;border-radius:5px;background:transparent;padding:6px 12px;color:#acbdc2;cursor:pointer}button[aria-pressed=true]{background:#d9b76f;color:#17232b}
+
+.official-links{display:flex;flex-direction:column;align-items:flex-start;gap:8px;margin:20px 0;padding:16px 20px;border:1px solid #30434d;border-radius:6px}.official-links a:hover{text-decoration:underline}

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Jev 对局托管</title><link rel="stylesheet" href="popup.css"></head>
+<body>
+<header><div class="brand-mark">J</div><div class="brand"><p class="eyebrow" data-i18n="brand">王二火大 · PLAYER AI</p><h1 data-i18n="title">Jev 对局托管</h1></div><div class="header-right"><div class="language" aria-label="Language / 语言"><button id="lang-zh" aria-pressed="true">中</button><button id="lang-en" aria-pressed="false">EN</button></div><span class="version">0.2.1</span></div></header>
+<main>
+<section class="battle">
+ <div class="status-line"><span id="dot" class="dot"></span><strong id="status" data-i18n="connecting">正在连接游戏…</strong><span id="tick" class="tick"></span></div>
+ <p id="game" class="muted"></p>
+ <div class="metrics"><div><b id="decisions">0</b><span data-i18n="decisions">模型回答</span></div><div><b id="credits">—</b><span data-i18n="credits">对局资金</span></div><div><b id="latency">—</b><span data-i18n="latency">响应耗时</span></div></div>
+ <p id="mission" class="mission"></p>
+ <div class="actions"><button id="start" class="primary" disabled><span data-i18n="start">开启托管</span><span>↗</span></button><button id="stop" data-i18n="stop" disabled>停止</button></div>
+</section>
+<p id="notice" class="notice" role="status" aria-live="polite" hidden></p>
+<nav class="tabs" aria-label="Dashboard"><button id="tab-battlefield" data-panel="battlefield" data-i18n="battlefield" aria-pressed="true">战场</button><button id="tab-trends" data-panel="trends" data-i18n="trends" aria-pressed="false">趋势</button><button id="tab-settings" data-panel="settings" data-i18n="settings" aria-pressed="false">设置</button></nav>
+<section id="panel-battlefield" class="panel" aria-labelledby="tab-battlefield">
+ <div class="section-title"><h2 data-i18n="situation">实时战场态势</h2><span id="freshness" class="micro-label"></span></div>
+ <p id="no-battle" class="empty" data-i18n="noBattle">进入对局后显示战场态势。无需开启托管。</p>
+ <div id="awareness" hidden>
+  <div id="threat" class="threat"><strong id="threat-title"></strong><p id="threat-detail"></p><p id="range-warning" hidden></p></div>
+  <div class="force-grid"><div><span data-i18n="army">作战单位</span><b id="army">—</b></div><div><span data-i18n="visible">视野内敌军</span><b id="enemies">—</b></div><div><span data-i18n="nearby">基地附近</span><b id="nearby">—</b></div><div><span data-i18n="miners">采矿单位</span><b id="miners">—</b></div><div><span data-i18n="health">部队平均血量</span><b id="health">—</b></div><div><span data-i18n="antiAir">机动防空单位</span><b id="anti-air">—</b></div></div>
+  <div class="power-row"><span data-i18n="power">电力：供给 / 负荷</span><b id="power"></b><span id="power-state"></span></div>
+  <div class="section-title small"><h3 data-i18n="tactical">局部位置示意</h3><div class="legend"><span class="own" data-i18n="own">己方</span><span class="enemy" data-i18n="enemy">敌方</span><span class="base" data-i18n="base">基地</span></div></div>
+  <div id="position-map" class="position-map"></div><p class="hint" data-i18n="mapHint">当前可见样本 · 自动缩放 · 每方最多 24 个</p>
+  <div class="section-title small"><h3 data-i18n="production">生产队列</h3></div><ul id="queues" class="queues"></ul>
+  <details><summary data-i18n="inventory">己方单位与建筑</summary><div id="inventory" class="inventory"></div></details>
+ </div>
+</section>
+<section id="panel-trends" class="panel" aria-labelledby="tab-trends" hidden>
+ <p class="hint" data-i18n="chartHint">最近 300 个采样点 · 横轴为本机时间</p>
+ <article class="chart-card"><h2 data-i18n="decisionChart">决策趋势</h2><div class="legend"><span class="base" data-i18n="decisionLegend">累计有效模型回答</span></div><div id="decision-chart" class="chart"></div><div class="chart-stats"><span id="accepted"></span><span id="waits"></span></div><p class="hint" data-i18n="decisionHint"></p></article>
+ <article class="chart-card"><h2 data-i18n="economyChart">经济趋势</h2><div class="legend"><span class="base" data-i18n="creditsLegend">现有资金</span><span class="own" data-i18n="freeLegend">扣除队列剩余投入</span></div><div id="economy-chart" class="chart"></div><p class="hint" data-i18n="economyHint"></p></article>
+ <p class="hint" data-i18n="historyNote"></p>
+</section>
+<section id="panel-settings" class="panel" aria-labelledby="tab-settings" hidden>
+<form id="settings">
+ <div class="section-title"><h2 data-i18n="settingsTitle">连接与控制</h2><button type="button" id="clear-key" class="text-button" data-i18n="clearKey" hidden>清除密钥</button></div>
+ <label for="api-key" data-i18n="apiKey">JEV 密钥</label><input id="api-key" name="api-key" type="password" autocomplete="off" spellcheck="false">
+ <button id="import-config" type="button" class="text-button import-button" data-i18n="import">从本地 .env 配置导入</button><input id="config-file" type="file" hidden>
+ <label for="api-base" data-i18n="apiBase">API 地址</label><input id="api-base" type="url" spellcheck="false" required>
+ <label for="hotkey" data-i18n="hotkey">托管快捷键</label><input id="hotkey" type="text" readonly aria-describedby="hotkey-hint"><p id="hotkey-hint" class="hint" data-i18n="hotkeyHint"></p>
+ <label class="check"><input id="auto-camera" type="checkbox"><span data-i18n="autoCamera">自动跟随交战与基地镜头</span></label>
+ <details><summary data-i18n="advanced">更多设置</summary><div class="advanced"><label for="model" data-i18n="model">Jev 模型</label><input id="model" spellcheck="false"><label for="budget" data-i18n="budget">每局决策请求上限</label><input id="budget" type="number" min="1" max="10000"><p class="hint" data-i18n="budgetHint"></p></div></details>
+ <button class="save" id="save" type="submit" data-i18n="save">保存设置</button><button class="save" id="test-connection" type="button" data-i18n="test">测试 Jev 连接</button><p class="privacy" data-i18n="privacy"></p>
+</form>
+</section>
+<details id="history"><summary><span data-i18n="history">最近执行记录</span><span id="failures"></span></summary><ol id="events"></ol></details>
+</main>
+<footer><div class="footer-meta"><span data-i18n="footer">公开玩家 API · 独立策略</span><a id="help-link" href="help.html" target="_blank" data-i18n="help">使用说明 ↗</a></div><div class="official-links"><a id="official-site" href="https://wangerhuoda.com/" target="_blank" rel="noopener noreferrer"><span data-i18n="officialWebsite">王二火大</span> ↗</a></div></footer>
+<script type="module" src="popup.js"></script>
+</body></html>

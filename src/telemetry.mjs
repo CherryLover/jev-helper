@@ -1,0 +1,39 @@
+// Compact, bounded telemetry derived only from the public player observation.
+export const HISTORY_LIMIT = 300;
+export const SAMPLE_MS = 2000;
+const number = n => typeof n === 'number' && Number.isFinite(n) ? n : null;
+const count = n => Math.max(0, number(n) ?? 0);
+const short = s => typeof s === 'string' ? s.slice(0,80) : '';
+const point = p => number(p?.x) !== null && number(p?.y) !== null ? {x:p.x,y:p.y} : null;
+export function summarize(state = {}, at = Date.now()) {
+  const strategy=state.strategy ?? {}, power=state.self?.power ?? {};
+  return {
+    at, tick:number(state.tick), gameSeconds:number(state.gameSeconds),
+    credits:number(state.self?.credits), freeCredits:number(state.uncommittedCredits),
+    committedCredits:number(state.committedCredits),
+    army:count(state.ownArmyCount), harvesters:count(state.harvesters), antiAir:count(state.antiAirCount),
+    health:state.ownArmyCount>0 ? number(state.averageArmyHealth) : null,
+    visibleEnemies:count(state.visibleEnemyCount), nearbyEnemies:count(state.nearbyEnemyCount),
+    power:{total:number(power.total),drain:number(power.drain)},
+    threat:strategy.critical?'critical':strategy.suppressed?'suppressed':state.baseUnderAttack?'pressure':'clear',
+    rangeThreats:(strategy.rangeThreats??[]).slice(0,12).map(t=>({name:short(t.name),range:number(t.range)})),
+    enemyMix:{infantry:count(strategy.enemyMix?.infantry),vehicles:count(strategy.enemyMix?.vehicles),air:count(strategy.enemyMix?.air)},
+    queues:(state.queues??[]).slice(0,8).map(q=>({type:short(String(q.type)),items:(q.items??[]).slice(0,6).map(i=>({name:short(i.name),quantity:count(i.quantity),progress:number(i.progress),status:short(i.status)}))})),
+    inventory:Object.entries(state.inventory??{}).slice(0,48).map(([kind,u])=>({kind:short(kind),label:short(u.name),count:count(u.count)})),
+    base:point(state.base),
+    // collectState already truncates these visible-only lists. They are a schematic, not a full map.
+    ownPoints:(state.army??[]).slice(0,24).map(u=>point(u.tile)).filter(Boolean),
+    enemyPoints:(state.visibleEnemies??[]).slice(0,24).map(u=>point(u.tile)).filter(Boolean),
+  };
+}
+export function recordObservation(session, snapshot, at = Date.now()) {
+  const observation={...snapshot,at};
+  const last=session.history?.at(-1);
+  const reset=last && observation.gameSeconds!==null && last.gameSeconds!==null && observation.gameSeconds<last.gameSeconds;
+  let history=reset?[]:[...(session.history??[])];
+  const sample={at,gameSeconds:observation.gameSeconds,credits:observation.credits,freeCredits:observation.freeCredits,decisions:session.decisions??0};
+  if(!last || reset || at-last.at>=SAMPLE_MS)history.push(sample);
+  // Repeated popup polls and player events must not advance the sampling clock or erase the first point.
+  history=history.slice(-HISTORY_LIMIT);
+  return {...session,observation,history,lastTick:observation.tick,credits:observation.credits,army:observation.army};
+}

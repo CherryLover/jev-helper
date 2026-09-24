@@ -45,7 +45,9 @@ HTTP 401/402/403 会显示具体状态并立即停止托管；服务恢复或修
 
 ## 本地部署 Laya 模型
 
-除了 TypeSafe 托管的 Jev 云端模型，扩展还能使用在本机 Apple 芯片上用 MLX 运行的 Laya 决策模型（来自 [laya-vs-jev](https://github.com/virajbhartiya/laya-vs-jev) 仓库）。不需要密钥，不产生 API 费用，单次回答通常几十到两百毫秒；一台 Mac 跑起服务后，局域网内其他电脑也能共用。
+> 完整说明见 **[docs/local-laya.md](docs/local-laya.md)**：模型来源仓库、环境要求、服务端启动与参数、扩展里要填的地址和令牌、请求 / 响应格式、错误码与常见问题。
+
+除了 TypeSafe 托管的 Jev 云端模型，扩展还能使用在本机 Apple 芯片上用 MLX 运行的 Laya 决策模型（运行库来自 [laya-vs-jev](https://github.com/virajbhartiya/laya-vs-jev)，权重为 Hugging Face [aac6fef/laya-multilingual-mlx](https://huggingface.co/aac6fef/laya-multilingual-mlx)）。不需要密钥，不产生 API 费用，单次回答通常几十到两百毫秒；一台 Mac 跑起服务后，局域网内其他电脑也能共用。
 
 | | Jev 云端 | 本地 Laya |
 | --- | --- | --- |
@@ -56,48 +58,27 @@ HTTP 401/402/403 会显示具体状态并立即停止托管；服务恢复或修
 
 两套配置各自保存，可在设置顶部随时切换。
 
-### 启动步骤
-
-1. **准备模型**：把 `laya-vs-jev` 仓库放在本仓库旁边（或用 `LAYA_REPO=/path/to/laya-vs-jev` 指定），在其中完成 `uv sync` 并下载 `aac6fef/laya-multilingual-mlx` 检查点到 `models/hub/laya-multilingual-mlx`。
-2. **启动服务**：在本仓库运行：
-
-   ```sh
-   npm run laya
-   ```
-
-   它用 laya-vs-jev 的 Python 环境启动 `tools/laya-server.py`，默认只监听 `127.0.0.1:8742`，加载模型后打印监听地址。
-3. **连接扩展**：在扩展设置中选择「本地 Laya」，本地服务地址默认 `http://127.0.0.1:8742/v1`。点「保存设置」并授权该地址，再点「测试模型连接」。成功后照常进入对局开启托管。
-
-### 局域网共享
-
-要让局域网内其他电脑使用，运行：
+### 快速开始
 
 ```sh
-npm run laya -- --lan
+# 1. 在本仓库旁边准备模型（只需一次）
+cd .. && git clone https://github.com/virajbhartiya/laya-vs-jev.git && cd laya-vs-jev
+uv sync --extra demo
+uv run --extra demo hf download aac6fef/laya-multilingual-mlx --local-dir models/hub/laya-multilingual-mlx
+
+# 2. 回到本仓库启动服务（默认 http://127.0.0.1:8742/v1）
+cd ../jev-helper && npm run laya
 ```
 
-服务改为监听所有网卡，启动时打印局域网地址和访问令牌；令牌首次自动生成并保存在 `~/.laya-server-token`，之后每次启动都相同，删除该文件即可更换。其他电脑的扩展里填服务打印的地址（例如 `http://10.0.25.215:8742/v1`）并填入访问令牌。
+3. 扩展「设置」→「模型来源」选「本地 Laya」，本地服务地址保持默认 `http://127.0.0.1:8742/v1`，保存并授权，再点「测试模型连接」。
 
-扩展只允许本机和私有网段（10.x、172.16–31.x、192.168.x、*.local）使用 HTTP，其他地址仍要求 HTTPS。
-
-### 其他参数
-
-| 参数 | 作用 |
-| --- | --- |
-| `--port <端口>` | 更换端口（默认 8742，也可用环境变量 `LAYA_PORT`） |
-| `--model <检查点目录>` | 指定其他模型检查点 |
-| `--token <令牌>` | 手动指定访问令牌（也可用 `LAYA_TOKEN`） |
-| `--log <文件>` | 把每次请求另存为 JSON Lines，供 [决策日志](#决策日志) 离线分析 |
-| `--raw-state` | 战况原样发给模型，不重新排序 |
-| `--quiet` | 不在终端逐条打印请求 |
-
-参数写在 `npm run laya --` 之后，例如 `npm run laya -- --lan --log laya.jsonl`。
+局域网共享用 `npm run laya -- --lan`，服务会打印局域网地址和访问令牌，填到其他电脑的扩展里即可。扩展只允许本机和私有网段（10.x、172.16–31.x、192.168.x、*.local）使用 HTTP，其他地址仍要求 HTTPS。
 
 ### 工作方式与局限
 
 本地服务实现与 Jev 相同的 `POST /v1/systemone` 候选选择协议，扩展后台按当前选中的来源发请求，仍然只信任扩展内保存的地址和令牌，拒绝重定向；候选校验、请求上限、停止规则与 Jev 完全一致。切换来源或修改当前来源的地址 / 令牌 / 模型会停止正在进行的托管。悬浮状态窗、弹窗状态和快捷键提示会显示当前来源名称。
 
-Laya 的上下文只有约 1024 个 token，而一局的战况描述通常更长。本地服务会把数字、计数和标志放在前面、单位清单等长数组放在后面，超出部分从末尾截断；候选说明也会被压缩。因此本地模型的决策质量明显弱于 Jev，属实验用途，不保证胜率。服务默认只接受本机访问，局域网模式必须携带访问令牌；服务不会主动连接外网。
+Laya 的上下文只有约 1024 个 token，而一局的战况描述通常更长。本地服务会把数字、计数和标志放在前面、单位清单等长数组放在后面，超出部分从末尾截断。因此本地模型的决策质量明显弱于 Jev，属实验用途，不保证胜率。服务默认只接受本机访问，局域网模式必须携带访问令牌；服务不会主动连接外网。
 
 ## 功能详解
 
@@ -164,7 +145,7 @@ node tools/analyze-log.mjs <导出的 json 或 laya --log 文件>
 | --- | --- |
 | 0.4.3 | 决策循环改由游戏拍子唤醒，后台标签页不再每分钟才决策一次；舰船射程内遇敌自动还击；弹窗新增「战绩」标签；决策日志记录出击就绪状态 |
 | 0.4.2 | 出击门槛按实际生产能力判断（能造车 / 只能出步兵 / 不能生产 / 兵力停滞各有规则）；探图不再因见过敌方建筑而停止；新增「本局目标」设置 |
-| 0.4.1 | 新增决策日志：本机记录、面板汇总、导出 JSON、清空；本地服务 `--log` 请求日志；离线分析脚本 `tools/analyze-log.mjs` |
+| 0.4.1 | 新增决策日志：本机记录、面板汇总、导出 JSON、清空；本地服务 `--log` 请求日志（见 [docs/local-laya.md](docs/local-laya.md#请求日志与离线分析)）；离线分析脚本 `tools/analyze-log.mjs` |
 | 0.4.x（CI） | GitHub Actions：推送 `main` 自动测试、打包并按版本号发布 Release；PR 只做检查；Actions 升级到 Node 24 |
 | 0.4.0 | 新增「模型来源」开关与本地 Laya 决策服务（`npm run laya`，支持局域网共享 + 访问令牌）；私有网段允许 HTTP；设置页改进（密钥显示 / 隐藏与回填、行内错误提示、测试按钮带状态、自动去首尾空格） |
 | 0.3.0 | 游戏内悬浮状态窗 |
@@ -198,7 +179,7 @@ npm run package
 | `npm run build` | 构建到 `dist/`，在扩展管理页重新加载并刷新游戏页即可生效 |
 | `npm test` | 构建并运行全部测试 |
 | `npm run package` | 构建并在 `artifacts/` 生成发布 ZIP |
-| `npm run laya` | 启动本地 Laya 决策服务（见 [本地部署](#本地部署-laya-模型)） |
+| `npm run laya` | 启动本地 Laya 决策服务（见 [docs/local-laya.md](docs/local-laya.md)） |
 | `node tools/preview.mjs` | 界面预览，打开 `http://127.0.0.1:4318/` |
 | `node tools/analyze-log.mjs <文件>` | 离线分析决策日志 |
 
@@ -219,7 +200,7 @@ npm run package
 - `src/observer.mjs` / `src/telemetry.mjs`：只读观测、压缩快照与有界历史采样。
 - `src/i18n.mjs` / `src/charts.mjs`：双语文案和本地 SVG 图表，无外部图表依赖。
 - `src/popup.mjs` 与 `public/`：弹窗（观察台、战绩、设置）、说明、图标。
-- `tools/laya-server.py` / `tools/laya-server.sh`：本地 Laya 决策服务（`npm run laya`），不打入扩展运行包。
+- `tools/laya-server.py` / `tools/laya-server.sh`：本地 Laya 决策服务（`npm run laya`），不打入扩展运行包；使用说明见 `docs/local-laya.md`。
 - `tools/analyze-log.mjs`：决策日志离线分析。
 - `test/`：既有策略回归及扩展消息、权限、停止、会话边界、双模型来源、决策日志、战役出击规则、拍子唤醒、舰船自卫与战绩测试。
 

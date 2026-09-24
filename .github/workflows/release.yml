@@ -22,9 +22,9 @@ jobs:
       version: ${{ steps.meta.outputs.version }}
       zip: ${{ steps.meta.outputs.zip }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -59,7 +59,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: werhd-jev-extension-${{ steps.meta.outputs.version }}
           path: ${{ steps.meta.outputs.zip }}
@@ -75,11 +75,11 @@ jobs:
       VERSION: ${{ needs.check.outputs.version }}
       ZIP: ${{ needs.check.outputs.zip }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: werhd-jev-extension-${{ env.VERSION }}
           path: artifacts

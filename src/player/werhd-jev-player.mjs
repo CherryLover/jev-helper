@@ -238,6 +238,8 @@ export function escalationAdvice(a) {
 // - nothing producible at all: attack with whatever exists
 // - force stopped growing for a long time (no factory, no money, unit cap): attack with what exists
 export const FORCE_STALL_TICKS = 2700, MIN_ATTACK_UNITS = 4;
+// Nothing to do: after this many turns of all-wait answers with no action, ask less often (saves tokens).
+export const QUIET_TURNS = 5, QUIET_INTERVAL_MS = 3000;
 export function forceReadiness(api, catalog, state, army, tanks, memory) {
   const tick = api.tick();
   const vehicleType = api.QueueType?.Vehicles ?? 3, infantryType = api.QueueType?.Infantry ?? 2;
@@ -488,7 +490,15 @@ export function candidateGroups(api, catalog, snapshot, memory) {
     !scoutUnits.some(u=>u.name===preferredScout.name)&&!state.queues.some(q=>q.items.some(i=>i.name===preferredScout.name));
   const roles={antiInfantry:0,antiArmor:0};
   for(const u of scoutUnits)if(u.id!==memory.scoutId&&catalog[u.name]?.weapon?.range>=3)roles[infantryProfile(catalog[u.name],api).role]++;
-  state.infantryRoles={...roles,targetAntiInfantry:3,targetAntiArmor:state.airThreatCount>0?3:2,preferredScout:preferredScout?.name,needsScout:!!needsScout};
+  // Without a vehicle factory (or anything it can build), infantry is the whole army: the support
+  // caps (six infantry, three of each role) would freeze the force below the attack threshold forever.
+  const vehicleArmy=api.production.available(api.QueueType?.Vehicles ?? 3).some(i=>(catalog[i.name]?.weapon?.damage??0)>0&&!catalog[i.name]?.harvester&&!catalog[i.name]?.naval);
+  const infantryArmy=!vehicleArmy;
+  const footCap=infantryArmy?Math.min(20,ATTACK_FORCE_SIZE*2):6, roleCap=infantryArmy?footCap:3;
+  const combatFoot=scoutUnits.filter(u=>(catalog[u.name]?.weapon?.damage??0)>0&&!catalog[u.name]?.engineer).length;
+  // Money piling up while the army is short: the model saying "wait" is no longer a real choice.
+  const idleMoney=infantryArmy&&combatFoot<ATTACK_FORCE_SIZE&&state.self.credits>=3000;
+  state.infantryRoles={...roles,targetAntiInfantry:roleCap,targetAntiArmor:infantryArmy?footCap:state.airThreatCount>0?3:2,infantryArmy,preferredScout:preferredScout?.name,needsScout:!!needsScout};
   const foot = group(
     "infantry",
     "Choose infantry by role and cost effectiveness: maintain anti-infantry firepower plus limited anti-armor/anti-air support, not six copies of one specialist. Read the armor-adjusted normal/deployed scores; higher tech and raw damage do not imply better anti-infantry performance. Before the enemy base is found, train one affordable fast scout identified by speed and cost (often a dog); keep it mobile. Preserve funds for miners and tanks.",
@@ -496,7 +506,7 @@ export function candidateGroups(api, catalog, snapshot, memory) {
   if (
     !queueOf(infantryType)?.size &&
     barracks &&
-    (footCount < 6 || needsScout) &&
+    (footCount < footCap || needsScout) &&
     (footCount < 1 || state.self.credits > 1000 || needsScout && state.self.credits >= catalog[preferredScout.name].cost)
   )
     for (const item of infantryOffers) {
@@ -508,7 +518,7 @@ export function candidateGroups(api, catalog, snapshot, memory) {
         r.engineer ||
         r.cost > 1500 ||
         r.weapon?.damage <= 0 ||
-        (!isScout && (r.weapon?.range < 3 || roles[profile.role] >= (profile.role==='antiInfantry'?3:state.infantryRoles.targetAntiArmor))) ||
+        (!isScout && (r.weapon?.range < 3 || roles[profile.role] >= (profile.role==='antiInfantry'?roleCap:state.infantryRoles.targetAntiArmor))) ||
         r.cost > state.self.credits
       )
         continue;
@@ -521,6 +531,7 @@ export function candidateGroups(api, catalog, snapshot, memory) {
           queue: infantryType,
           cost: r.cost,
           minCredits: r.cost,
+          ...(idleMoney&&!isScout?{auto:2}:{}),
         },
       );
     }
@@ -1323,6 +1334,7 @@ export async function attachJevPlayer(api, options = {}) {
       for (const id of Object.keys(requestGroups)) memory.questionTicks.set(id, tick);
       status.busy = true;
       const started = performance.now();
+      const acceptedBefore = status.accepted;
       const result = await requestDecision({ state: snap.state, groups: requestGroups }, { signal: controller.signal });
       status.decisions++;
       status.last = { tick, ...result };
@@ -1402,6 +1414,9 @@ export async function attachJevPlayer(api, options = {}) {
         rememberChoice(memory, id, choice, execution, api.tick(), true);
         emit({ kind: "action", tick: api.tick(), sourceTick: tick, question: id, choice, auto: true, action, ...execution, reason: execution.accepted ? (id === "scouting" ? "auto_explore" : `auto_${id}`) : execution.reason });
       }
+      const allWait = Object.values(result.answers).every(a => a.choice === "wait");
+      const quiet = allWait && status.accepted === acceptedBefore && !snap.state.baseUnderAttack;
+      memory.quietTurns = quiet ? (memory.quietTurns ?? 0) + 1 : 0;
     } catch (e) {
       if (/outside a running battle/.test(e.message)) {
         stop("battle_ended");
@@ -1415,20 +1430,21 @@ export async function attachJevPlayer(api, options = {}) {
     } finally {
       status.busy = false;
       if (status.running)
-        decisionTimer = setTimeout(decide, options.intervalMs ?? 600);
+        decisionTimer = setTimeout(decide, decideInterval());
     }
   };
   // Page timers are throttled to once a minute in a hidden tab while the simulation keeps running.
   // The game's own tick callback is not, so every tick wakes the loops when a timer is overdue.
   // The callback itself stays trivial (the game disables handlers that exceed ~8 ms).
-  const microEvery = options.microIntervalMs ?? 150, decideEvery = options.wakeIntervalMs ?? options.intervalMs ?? 600;
+  const microEvery = options.microIntervalMs ?? 150;
+  const decideInterval = () => (memory.quietTurns ?? 0) >= QUIET_TURNS ? Math.max(QUIET_INTERVAL_MS, options.intervalMs ?? 600) : options.intervalMs ?? 600;
   let wakePending = false, tickDriven = false;
   const runDue = () => {
     wakePending = false;
     if (!status.running) return;
     const now = performance.now();
     if (!options.disableMicro && now - lastMicroAt >= microEvery) { clearTimeout(microTimer); micro(); }
-    if (!status.busy && now - lastDecideAt >= decideEvery) { clearTimeout(decisionTimer); decide(); }
+    if (!status.busy && now - lastDecideAt >= (options.wakeIntervalMs ?? decideInterval())) { clearTimeout(decisionTimer); decide(); }
   };
   if (typeof api.onTick === "function" && !options.disableTickWake) {
     try {

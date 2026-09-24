@@ -80,11 +80,17 @@ export function specialGroups(api, catalog, snapshot, memory, groups) {
   // Siege from cover: for each visible enemy defense, the empty civilian building closest to it that
   // is within reach. Every defense gets its own option, so both sides of a road can be taken.
   const assessment = snapshot.state.combatAssessment;
-  const attacksFailing = (assessment?.level ?? 0) >= 1 || !!assessment?.staleAttack;
+  // Also when the army has been unable to reach attack strength for a long time: taking a defense from
+  // cover is then the only progress the infantry can make.
+  const readiness = snapshot.state.forceReadiness;
+  const deadlocked = !!readiness && !readiness.ready && (readiness.stalledTicks ?? 0) >= ATTACK_STUCK_TICKS;
+  const attacksFailing = (assessment?.level ?? 0) >= 1 || !!assessment?.staleAttack || deadlocked;
   const recentlyLeft = (id) => tick - (memory.evacuatedAt?.get(id) ?? -Infinity) < REENTER_COOLDOWN;
   const houses = [...civilians, ...buildings].filter((u) => u.garrison?.canOccupy && !u.garrison.count && !own.has(u.id) && !recentlyLeft(u.id));
   const center = occupiers.length ? { rx: occupiers.reduce((n, u) => n + u.tile.rx, 0) / occupiers.length, ry: occupiers.reduce((n, u) => n + u.tile.ry, 0) / occupiers.length } : base.tile;
-  const enemyDefenses = enemies.filter((e) => e.type === api.ObjectType.Building && (catalog[e.name]?.isBaseDefense || (catalog[e.name]?.weapon?.damage ?? 0) > 0))
+  // Only defenses that can hit ground troops: an anti-air site does not block the road.
+  const groundWeapon = (r) => (r?.weapon?.damage ?? 0) > 0 && r.weapon.ag !== false;
+  const enemyDefenses = enemies.filter((e) => e.type === api.ObjectType.Building && groundWeapon(catalog[e.name]))
     .sort((a, b) => distance(a.tile, center) - distance(b.tile, center)).slice(0, 4);
   const sieged = new Set();
   for (const defense of enemyDefenses) {
@@ -97,7 +103,7 @@ export function specialGroups(api, catalog, snapshot, memory, groups) {
     if (crew.length < 2) continue;
     sieged.add(house.id);
     const label = catalog[defense.name]?.label ?? defense.name;
-    garrison(`siege_${house.id}`, `${attacksFailing ? 'PRIORITY ' : ''}SIEGE ${label} #${defense.id} at (${defense.tile.rx},${defense.tile.ry}): garrison ${crew.length} infantry into building #${house.id} at (${house.tile.rx},${house.tile.ry}), ${Math.round(distance(house.tile, defense.tile))} tiles from it (its weapon range ${range}). Garrisoned infantry fire from cover and outlast the defense${attacksFailing ? '; attacks in the open are failing' : ''}.`,
+    garrison(`siege_${house.id}`, `${attacksFailing ? 'PRIORITY ' : ''}SIEGE ${label} #${defense.id} at (${defense.tile.rx},${defense.tile.ry}): garrison ${crew.length} infantry into building #${house.id} at (${house.tile.rx},${house.tile.ry}), ${Math.round(distance(house.tile, defense.tile))} tiles from it (its weapon range ${range}). Garrisoned infantry fire from cover and outlast the defense${attacksFailing ? `; ${deadlocked ? 'the army has not been able to attack for a long time' : 'attacks in the open are failing'}` : ''}.`,
       { type: 'special', kind: 'garrison', ids: crew.map((u) => u.id), targetId: house.id,
         order: { type: api.OrderType.Occupy, target: { objectId: house.id } }, auto: attacksFailing ? 2 : undefined, purpose: 'siege', defenseId: defense.id });
   }

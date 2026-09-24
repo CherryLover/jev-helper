@@ -23,7 +23,8 @@ const api={ObjectType:{Building:2,Infantry:3,Vehicle:7,Aircraft:1},QueueType:{St
   ArmorType:{0:'None',1:'Flak',2:'Plate',3:'Light',4:'Medium',5:'Heavy',None:0,Heavy:5},LandType:{Clear:0,Water:7,Tiberium:9},
   units:r=>r==='self'?own:enemies,me:()=>({credits:5000,power:{total:200,drain:80}}),tick:()=>tick,time:()=>tick/15,
   production:{queues:()=>Array.from({length:6},(_,type)=>({type,size:0,maxSize:99,items:[]})),
-    available:q=>q===2||q===undefined?['BASIC','SPECIALIST','SCOUT'].map(name=>({name,type:3})):[]},
+    // A normal base with a vehicle factory: tanks are the army and infantry is support.
+    available:q=>q===2||q===undefined?['BASIC','SPECIALIST','SCOUT'].map(name=>({name,type:3})):q===3?[{name:'TANK',type:7}]:[]},
   map:{size:()=>({width:60,height:60}),visible:()=>true,tile:(x,y)=>x>=0&&y>=0&&x<60&&y<60?{rx:x,ry:y,landType:0}:undefined},
   canPlace:()=>true,inRange:()=>true,move:(...a)=>calls.push(['move',...a]),gather:(...a)=>calls.push(['gather',...a]),attack:(...a)=>calls.push(['attack',...a]),
 };

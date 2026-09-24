@@ -10,6 +10,7 @@ const catalog = {
   YARD:{yard:true,label:'YARD'}, BARRACKS:{factory:'InfantryType',label:'BARRACKS',cost:500},
   E2:{occupier:true,cost:100,weapon:{damage:15,range:4},label:'Conscript'},
   PILL:{isBaseDefense:true,weapon:{damage:40,range:5},label:'Pill Box',cost:500}, HOUSE:{label:'House'}, EPOWER:{power:200,label:'Power Plant',cost:800},
+  PATRIOT:{isBaseDefense:true,weapon:{damage:50,range:12,aa:true,ag:false},label:'Patriot Missile',cost:1000}, TANK:{cost:900,category:'AFV',weapon:{damage:60,range:5},label:'Rhino'},
 };
 const unit = (id,name,type,x,y,extra={}) => ({ id,name,type,tile:{rx:x,ry:y},hitPoints:100,maxHitPoints:100,isIdle:true,primaryWeapon:catalog[name].weapon,...extra });
 const house = (id,x,y) => unit(id,'HOUSE',2,x,y,{garrison:{count:0,capacity:5,canOccupy:true}});
@@ -148,4 +149,30 @@ test('a building just left is not offered again until the cooldown passes', () =
   later.memory.evacuatedAt=new Map([[600, 5000]]);
   groups={}; specialGroups(later.api, catalog, collectState(later.api, catalog), later.memory, groups);
   assert.ok(groups.garrison.actions.siege_600);
+});
+
+test('an anti-air site is not a siege target; a long deadlock makes siege automatic', () => {
+  const own=[unit(1,'YARD',2,10,10), ...squad(6)];
+  const w=world({ own, enemies:[unit(510,'PATRIOT',2,70,50), unit(500,'PILL',2,80,50)], neutral:[house(600,70,56), house(601,80,56)] });
+  const snapshot=collectState(w.api, catalog); snapshot.state.forceReadiness={ready:false,stalledTicks:3000};
+  const groups={}; specialGroups(w.api, catalog, snapshot, w.memory, groups);
+  assert.ok(!groups.garrison.actions.siege_600, 'the Patriot next to house 600 only shoots aircraft');
+  assert.ok(groups.garrison.actions.siege_601);
+  assert.equal(groups.garrison.actions.siege_601.auto, 2);
+  assert.match(groups.garrison.criteria.siege_601, /the army has not been able to attack for a long time/);
+});
+
+test('without vehicle production, infantry is the army: no support caps, and piled-up money trains it automatically', () => {
+  // The 0.5.8 deadlock: four conscripts, a barracks, 57,000 credits, no war factory, and no training offered for 65 minutes.
+  const own=[unit(1,'YARD',2,10,10), unit(2,'BARRACKS',2,12,10), ...squad(4, 14, 14)];
+  const w=world({ own, credits:57000 });
+  const snapshot=collectState(w.api, catalog); const groups=candidateGroups(w.api, catalog, snapshot, w.memory);
+  assert.equal(snapshot.state.infantryRoles.infantryArmy, true);
+  assert.ok(groups.infantry.actions.produce_E2, 'conscripts are still offered past three of a role');
+  assert.equal(groups.infantry.actions.produce_E2.auto, 2);
+  // With a vehicle factory, infantry stays a capped support role and nothing is automatic.
+  const tanks=world({ own:[unit(1,'YARD',2,10,10), unit(2,'BARRACKS',2,12,10), ...squad(4, 14, 14)], credits:57000, offers:{2:[{name:'E2',type:3}],3:[{name:'TANK',type:7}]} });
+  const s2=collectState(tanks.api, catalog); const g2=candidateGroups(tanks.api, catalog, s2, tanks.memory);
+  assert.equal(s2.state.infantryRoles.infantryArmy, false);
+  assert.ok(!g2.infantry?.actions?.produce_E2, 'three anti-infantry supports already in a tank army');
 });

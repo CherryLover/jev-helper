@@ -2,7 +2,7 @@ import {attachJevPlayer} from './player/werhd-jev-player.mjs';
 import {CHANNEL} from './shared.mjs';
 import {createObserver} from './observer.mjs';
 
-const VERSION='0.5.1';
+const VERSION='0.5.2';
 if(window.__werhdJevExtension?.version!==VERSION){
   window.__werhdJevExtension?.dispose?.();
   let player,token='',api;

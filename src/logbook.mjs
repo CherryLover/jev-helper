@@ -21,6 +21,7 @@ export function stateSummary(state = {}) {
     investment: state.strategy?.investment ? { category: short(state.strategy.investment.category, 24), name: short(state.strategy.investment.name, 24) } : null,
     ready: state.forceReadiness ? state.forceReadiness.ready === true : null, readyReason: short(state.forceReadiness?.reason, 160),
     escalation: number(state.combatAssessment?.level), recentLost: number(state.combatAssessment?.recentLost), recentKilled: number(state.combatAssessment?.recentKilled),
+    hints: Object.fromEntries(Object.entries(state.recentChoices ?? {}).filter(([, h]) => h.stale || h.removed).map(([id, h]) => [short(id, 24), { streak: number(h.streak), lostSince: number(h.lostSince), killedSince: number(h.killedSince), removed: h.removed === true }])),
   };
 }
 

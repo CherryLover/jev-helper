@@ -121,6 +121,38 @@ function roleOf(rule) {
   return rule.category ?? "support or technology";
 }
 
+// Recent answers per decision group, with the loss / kill totals at the time, so a repeated choice
+// that produced nothing can be shown back to the model and demoted.
+export const RECENT_LIMIT = 8, STALE_REPEATS = 4;
+export function rememberChoice(memory, group, choice, execution, tick, auto = false) {
+  const recent = (memory.recent ??= {})[group] ??= [];
+  const l = memory.ledger;
+  recent.push({ choice, tick, auto, accepted: execution?.accepted === true, reason: execution?.reason ?? "", lost: (l?.ownUnitsLost ?? 0) + (l?.ownBuildingsLost ?? 0), killed: (l?.enemyUnitsDestroyed ?? 0) + (l?.enemyBuildingsDestroyed ?? 0) });
+  if (recent.length > RECENT_LIMIT) recent.splice(0, recent.length - RECENT_LIMIT);
+}
+export function historyHints(groups, memory, state, assessment) {
+  const l = memory.ledger, lostNow = (l?.ownUnitsLost ?? 0) + (l?.ownBuildingsLost ?? 0), killedNow = (l?.enemyUnitsDestroyed ?? 0) + (l?.enemyBuildingsDestroyed ?? 0);
+  const level = assessment?.level ?? 0, out = {};
+  for (const [id, g] of Object.entries(groups)) {
+    const recent = memory.recent?.[id]; if (!recent?.length) continue;
+    let streak = 0, first = recent.at(-1);
+    for (let i = recent.length - 1; i >= 0 && recent[i].choice === recent.at(-1).choice; i--) { streak++; first = recent[i]; }
+    const choice = recent.at(-1).choice, lostSince = lostNow - first.lost, killedSince = killedNow - first.killed;
+    const stale = choice !== "wait" && streak >= STALE_REPEATS && killedSince === 0 && g.actions[choice];
+    const summary = recent.slice(-6).map(r => `${r.choice}${r.auto ? "*" : ""}${r.accepted ? "" : r.reason === "wait" ? "" : "(" + (r.reason || "skipped") + ")"}`).join(", ");
+    out[id] = { recent: summary, streak, lostSince, killedSince, stale: !!stale };
+    if (!(level >= 1 || stale)) continue;
+    g.instructions += ` RECENT ANSWERS HERE: ${summary}. The last ${streak} answer${streak === 1 ? "" : "s"} ${streak === 1 ? "was" : "were"} "${choice}"; since then we lost ${lostSince} and destroyed ${killedSince}. Repeating an answer that produced nothing is unlikely to work: prefer a different option unless the situation has changed.`;
+    if (stale) {
+      const others = Object.keys(g.actions).filter(k => k !== "wait" && k !== choice);
+      if (level >= 2 && others.length && choice !== "defend_base") { delete g.actions[choice]; delete g.criteria[choice]; out[id].removed = true; }
+      else if (g.criteria[choice]) g.criteria[choice] = `STALE ×${streak} (chosen ${streak} times, no progress): ${g.criteria[choice]}`;
+    }
+  }
+  state.recentChoices = out;
+  return out;
+}
+
 // Economy targets follow the actual situation instead of "three miners, two refineries":
 // income measured over the last window (credits gained plus credits spent), whether credits are
 // piling up or draining, and whether miners already sit idle without reachable ore.
@@ -756,6 +788,7 @@ export function candidateGroups(api, catalog, snapshot, memory) {
           ids: mobilize ? tanks.map((u) => u.id) : [scout.id],
           x: p.x,
           y: p.y,
+          auto: enemies.length === 0 && !memory.enemyBuildings.size ? 3 : undefined,
         },
       );
   }
@@ -765,6 +798,7 @@ export function candidateGroups(api, catalog, snapshot, memory) {
     const note = ` ESCALATION ${assessment.level}: ground assaults are failing (${assessment.reason}). Bring this arm to bear on the same target now instead of leaving it idle.`;
     for (const id of ["aircraft", "navy", "garrison", "engineering", "transport"]) if (groups[id]) groups[id].instructions += note;
   }
+  historyHints(groups, memory, state, assessment);
   return groups;
 }
 
@@ -1151,6 +1185,24 @@ export async function attachJevPlayer(api, options = {}) {
     if (options.debug && event.kind !== "observation") console.info("[werhd-jev]", event);
   };
   let lastMicroAt = -Infinity, lastDecideAt = -Infinity;
+  // Bookkeeping shared by model-chosen and automatic actions once the executor accepted them.
+  const afterAccepted = (action, execution) => {
+    status.accepted++;
+    if (action.type === "produce" && action.placement) memory.plannedSites.set(action.name, action.placement);
+    if (action.type === "produce") memory.spentCredits = (memory.spentCredits ?? 0) + (action.cost ?? 0);
+    if (action.type === "special") {
+      rememberSpecial(memory, action, execution, api.tick());
+      for (const unitId of execution.ids ?? []) memory.specialOrders.set(unitId, { tick: api.tick(), kind: action.kind });
+      if (action.targetId !== undefined) memory.specialTargets.set(`repair_${action.targetId}`, api.tick());
+    }
+    if (action.type === "set_deployed") for (const unitId of execution.ids ?? []) memory.postureOrders.set(unitId, api.tick());
+    for (const unitId of execution.undeployIds ?? []) memory.postureOrders.set(unitId, api.tick());
+    if (action.type === "mission") {
+      memory.mission = { ...action, ids: execution.ids ?? action.ids, since: api.tick() };
+      memory.frontiers.set(`${action.x},${action.y}`, api.tick());
+      memory.points = undefined;
+    }
+  };
   const stop = (reason = "manual") => {
     if (!status.running) return;
     status.running = false;
@@ -1301,29 +1353,9 @@ export async function attachJevPlayer(api, options = {}) {
         }
         const execStarted = performance.now(),
           execution = executeCandidate(api, action, catalog);
-        if (execution.accepted) {
-          status.accepted++;
-          if (action.type === "produce" && action.placement) memory.plannedSites.set(action.name, action.placement);
-          if (action.type === "produce") memory.spentCredits = (memory.spentCredits ?? 0) + (action.cost ?? 0);
-          if (action.type === "special") {
-            rememberSpecial(memory, action, execution, api.tick());
-            for (const unitId of execution.ids ?? []) memory.specialOrders.set(unitId, { tick: api.tick(), kind: action.kind });
-            if (action.targetId !== undefined) memory.specialTargets.set(`repair_${action.targetId}`, api.tick());
-          }
-          if (action.type === "set_deployed")
-            for (const unitId of execution.ids ?? [])
-              memory.postureOrders.set(unitId, api.tick());
-          for (const unitId of execution.undeployIds ?? []) memory.postureOrders.set(unitId, api.tick());
-          if (action.type === "mission") {
-            memory.mission = {
-              ...action,
-              ids: execution.ids ?? action.ids,
-              since: api.tick(),
-            };
-            memory.frontiers.set(`${action.x},${action.y}`, api.tick());
-            memory.points = undefined;
-          }
-        } else if (execution.reason !== "wait") status.rejected++;
+        if (execution.accepted) afterAccepted(action, execution);
+        else if (execution.reason !== "wait") status.rejected++;
+        rememberChoice(memory, id, answer.choice, execution, api.tick());
         emit({
           kind: "action",
           tick: api.tick(),
@@ -1339,26 +1371,22 @@ export async function attachJevPlayer(api, options = {}) {
           ...execution,
         });
       }
-      // Mechanical fallback: with nothing in sight and no known enemy structure, an army must keep
-      // searching. After three declined scouting questions the first frontier is taken anyway.
-      const scoutAnswer = result.answers.scouting;
-      if (scoutAnswer && groups.scouting) {
-        const nothingToFight = snap.state.visibleEnemyCount === 0 && !memory.enemyBuildings.size;
-        memory.scoutDeclines = scoutAnswer.choice === "wait" && nothingToFight ? (memory.scoutDeclines ?? 0) + 1 : 0;
-        if (memory.scoutDeclines >= 3) {
-          const [choice, action] = Object.entries(groups.scouting.actions).find(([k]) => k !== "wait") ?? [];
-          if (action) {
-            const execution = executeCandidate(api, action, catalog);
-            memory.scoutDeclines = 0;
-            if (execution.accepted) {
-              status.accepted++;
-              memory.mission = { ...action, ids: execution.ids ?? action.ids, since: api.tick() };
-              memory.frontiers.set(`${action.x},${action.y}`, api.tick());
-              memory.points = undefined;
-            }
-            emit({ kind: "action", tick: api.tick(), sourceTick: tick, question: "scouting", choice, auto: true, action, ...execution, reason: execution.accepted ? "auto_explore" : execution.reason });
-          }
-        }
+      // Mechanical fallback for objective-critical options marked `auto: N` (explore when nothing is
+      // in sight, capture with an engineer, train the engineer for it): after the model declined that
+      // group N times in a row, the first such option is executed anyway and logged as automatic.
+      memory.autoDeclines ??= {};
+      for (const [id, g] of Object.entries(groups)) {
+        const answer = result.answers[id];
+        const autos = Object.entries(g.actions).filter(([k, a]) => k !== "wait" && a && Number.isFinite(a.auto)).sort((a, b) => a[1].auto - b[1].auto);
+        if (!answer || !autos.length) { if (!autos.length) delete memory.autoDeclines[id]; continue; }
+        memory.autoDeclines[id] = answer.choice === "wait" ? (memory.autoDeclines[id] ?? 0) + 1 : 0;
+        const [choice, action] = autos[0];
+        if (memory.autoDeclines[id] < action.auto) continue;
+        const execution = executeCandidate(api, action, catalog);
+        memory.autoDeclines[id] = 0;
+        if (execution.accepted) afterAccepted(action, execution);
+        rememberChoice(memory, id, choice, execution, api.tick(), true);
+        emit({ kind: "action", tick: api.tick(), sourceTick: tick, question: id, choice, auto: true, action, ...execution, reason: execution.accepted ? (id === "scouting" ? "auto_explore" : `auto_${id}`) : execution.reason });
       }
     } catch (e) {
       if (/outside a running battle/.test(e.message)) {

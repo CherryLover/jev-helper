@@ -28,7 +28,7 @@ Chrome / Edge Manifest V3 扩展。配置模型密钥（或本地模型地址）
 1. 将发布 ZIP 解压到固定目录（ZIP 可在本仓库 Releases 页下载）。在 Chrome 的 `chrome://extensions`（Edge 为 `edge://extensions`）打开「开发者模式」，点击「加载已解压的扩展程序」，选择含 `manifest.json` 的目录。本地开发可直接选择本项目的 `dist/`。
 2. 打开扩展弹窗，进入「设置」，先在顶部选择「模型来源」：
    - **Jev 云端**：填写密钥，也可选择「从本地 .env 配置导入」读取已有的 `JEV_API_KEY`、`JEV_BASE_URL`、`JEV_MODEL`。其他字段不会保存或发送。API 默认 `https://api.typesafe.ai/v1`，也接受完整 `/systemone` 地址；自定义服务必须实现 Jev 的候选 Choice 协议，不是普通 Chat Completions 接口。
-   - **本地 Laya**：先按 [本地部署 Laya 模型](#本地部署-laya-模型) 启动本机服务，再填地址（和局域网令牌）。
+   - **本地 Laya**：先按 [本地模型使用说明](docs/local-laya.md) 启动本机服务，再填地址（和局域网令牌）。
 
    保存时只申请所填 API 域名的访问权限。
 3. 点快捷键输入框，按下组合键并保存。默认 `Alt+Shift+J`，作用于游戏页面；浏览器地址栏或聊天输入框中不触发。「测试模型连接」只发送一次无游戏动作的候选选择请求（Jev 云端可能产生少量模型费用），结果直接显示在按钮上；成功后再开局。
@@ -45,40 +45,7 @@ HTTP 401/402/403 会显示具体状态并立即停止托管；服务恢复或修
 
 ## 本地部署 Laya 模型
 
-> 完整说明见 **[docs/local-laya.md](docs/local-laya.md)**：模型来源仓库、环境要求、服务端启动与参数、扩展里要填的地址和令牌、请求 / 响应格式、错误码与常见问题。
-
-除了 TypeSafe 托管的 Jev 云端模型，扩展还能使用在本机 Apple 芯片上用 MLX 运行的 Laya 决策模型（运行库来自 [laya-vs-jev](https://github.com/virajbhartiya/laya-vs-jev)，权重为 Hugging Face [aac6fef/laya-multilingual-mlx](https://huggingface.co/aac6fef/laya-multilingual-mlx)）。不需要密钥，不产生 API 费用，单次回答通常几十到两百毫秒；一台 Mac 跑起服务后，局域网内其他电脑也能共用。
-
-| | Jev 云端 | 本地 Laya |
-| --- | --- | --- |
-| 需要密钥 | 是（JEV 密钥） | 否（局域网模式需访问令牌） |
-| 费用 | 按请求计费 | 免费 |
-| 运行环境 | TypeSafe 服务器 | 本机 Apple 芯片（MLX） |
-| 决策质量 | 较好 | 明显较弱，实验用途 |
-
-两套配置各自保存，可在设置顶部随时切换。
-
-### 快速开始
-
-```sh
-# 1. 在本仓库旁边准备模型（只需一次）
-cd .. && git clone https://github.com/virajbhartiya/laya-vs-jev.git && cd laya-vs-jev
-uv sync --extra demo
-uv run --extra demo hf download aac6fef/laya-multilingual-mlx --local-dir models/hub/laya-multilingual-mlx
-
-# 2. 回到本仓库启动服务（默认 http://127.0.0.1:8742/v1）
-cd ../jev-helper && npm run laya
-```
-
-3. 扩展「设置」→「模型来源」选「本地 Laya」，本地服务地址保持默认 `http://127.0.0.1:8742/v1`，保存并授权，再点「测试模型连接」。
-
-局域网共享用 `npm run laya -- --lan`，服务会打印局域网地址和访问令牌，填到其他电脑的扩展里即可。扩展只允许本机和私有网段（10.x、172.16–31.x、192.168.x、*.local）使用 HTTP，其他地址仍要求 HTTPS。
-
-### 工作方式与局限
-
-本地服务实现与 Jev 相同的 `POST /v1/systemone` 候选选择协议，扩展后台按当前选中的来源发请求，仍然只信任扩展内保存的地址和令牌，拒绝重定向；候选校验、请求上限、停止规则与 Jev 完全一致。切换来源或修改当前来源的地址 / 令牌 / 模型会停止正在进行的托管。悬浮状态窗、弹窗状态和快捷键提示会显示当前来源名称。
-
-Laya 的上下文只有约 1024 个 token，而一局的战况描述通常更长。本地服务会把数字、计数和标志放在前面、单位清单等长数组放在后面，超出部分从末尾截断。因此本地模型的决策质量明显弱于 Jev，属实验用途，不保证胜率。服务默认只接受本机访问，局域网模式必须携带访问令牌；服务不会主动连接外网。
+除了 Jev 云端，扩展还能使用在本机 Apple 芯片上运行的 Laya 决策模型：不需要密钥、不产生费用，可局域网共享，但决策质量明显弱于 Jev，属实验用途。模型来源、服务端启动、扩展里要填的地址与令牌、请求 / 响应格式和常见问题，见 **[本地模型使用说明（docs/local-laya.md）](docs/local-laya.md)**。
 
 ## 功能详解
 

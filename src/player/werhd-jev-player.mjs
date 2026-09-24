@@ -207,7 +207,8 @@ export function combatAssessment(api, catalog, state, memory, { army = [], units
   if ((tradingBadly || staleAttack) && tick - esc.changedAt >= COMBAT_WINDOW_TICKS && esc.level < ESCALATION_MAX) {
     esc.level++; esc.changedAt = tick;
     esc.reason = tradingBadly ? `lost ${recentLost} for ${recentKilled} kills in the last ${COMBAT_WINDOW_TICKS} ticks` : `the assault on #${mission.targetId} made no progress for ${tick - mission.since} ticks`;
-    if (mission?.mode === "attack") { memory.abandonedAttack = { targetId: mission.targetId, tick }; memory.mission = undefined; }
+    // The abandoned attack must not keep refusing the regroup through its mission lock.
+    if (mission?.mode === "attack") { memory.abandonedAttack = { targetId: mission.targetId, tick }; memory.mission = undefined; memory.missionLock = undefined; }
   } else if (esc.level > 0 && tick - esc.changedAt >= COMBAT_WINDOW_TICKS && (tradingWell || tick - esc.changedAt >= COMBAT_WINDOW_TICKS * 3)) {
     esc.level--; esc.changedAt = tick; esc.reason = tradingWell ? "recent exchanges are favourable" : "a quiet period";
   }
@@ -265,13 +266,16 @@ export function forceReadiness(api, catalog, state, army, tanks, memory) {
   const stalled = combatUnits > 0 && stalledTicks >= FORCE_STALL_TICKS;
   const aaNeeded = (state.airThreatCount ?? 0) > 0 && (state.mobileAntiAirCount ?? 0) < ATTACK_AA_ESCORTS;
   const aaSatisfied = !aaNeeded || !aaProducible;
-  const committedAttack = memory.mission?.mode === "attack" && (canBuildVehicles ? tanks.length : combatUnits) >= MIN_ATTACK_UNITS;
   const level = memory.escalation?.level ?? 0, escalatedAt = memory.escalation?.changedAt ?? -Infinity;
   const threshold = attackThreshold(canBuildAnything, level);
+  const fielded = canBuildVehicles ? tanks.length : combatUnits;
+  // "Already attacking" only counts while the force is still near strength (the same 75% line as the
+  // readiness hysteresis): a handful of survivors of an attack must not bypass the threshold forever.
+  const committedAttack = memory.mission?.mode === "attack" && fielded >= Math.max(MIN_ATTACK_UNITS, Math.ceil(threshold * READY_HOLD));
   // Hysteresis: once ready, the force stays ready until it falls below 75% of the threshold, so a
   // single loss or reinforcement near the line does not flip attack / rally every few seconds.
   const latch = memory.readinessLatch;
-  const holding = !!latch?.ready && level <= latch.level && canBuildAnything && (canBuildVehicles ? tanks.length : combatUnits) >= Math.ceil(threshold * READY_HOLD);
+  const holding = !!latch?.ready && level <= latch.level && canBuildAnything && fielded >= Math.ceil(threshold * READY_HOLD);
   const escalationNote = level ? ` (escalation ${level}: attacks were failing, so ${threshold} are required)` : "";
   let ready = false, reason;
   if (committedAttack) { ready = true; reason = "an attack is already committed"; }
@@ -378,7 +382,7 @@ export function frontierPoints(api, base, memory) {
 
 // Assault options per question (a small model sees ~256 tokens of options), how far from the troops
 // a mobile enemy may be to be offered for engagement, and how long a rally point stays put.
-export const MAX_ASSAULTS = 6, ENGAGE_RADIUS = 15, RALLY_HOLD_TICKS = 1800;
+export const MAX_ASSAULTS = 6, MAX_ASSAULTS_WITH_OBJECTIVE = 4, ENGAGE_RADIUS = 15, RALLY_HOLD_TICKS = 1800, OBJECTIVE_GUARD_RADIUS = 10;
 // The rally point used to be re-scored every turn, including how many of our units stood nearby,
 // so it wandered and the gather order was re-sent over and over. It now stays for a while.
 export function stableRallySite(api, catalog, own, base, memory) {
@@ -682,12 +686,12 @@ export function candidateGroups(api, catalog, snapshot, memory) {
   // The player's own objective, matched to a real building (remembered through the fog).
   const objective = trackObjective(api, catalog, memory, base?.tile);
   const objectiveTarget = objective && !objective.done ? objective : undefined;
-  state.objectiveTarget = objective ? { id: objective.id, name: objective.name, label: objective.label, x: objective.x, y: objective.y, lastSeenTick: objective.lastSeen, visible: !!objective.visible, done: !!objective.done }
+  state.objectiveTarget = objective ? { id: objective.id, name: objective.name, label: objective.label, x: objective.x, y: objective.y, lastSeenTick: objective.lastSeen, visible: !!objective.visible, done: !!objective.done, captured: !!objective.captured }
     : memory.objective ? { found: false, keywords: memory.objectiveKeys?.words ?? [] } : null;
   // Small local models read only the start of a question: objective and readiness go first, the
   // escalation note is one short sentence at the end.
   const where = (t) => `(${t.x},${t.y})`;
-  const objectiveNote = memory.objective ? `MISSION OBJECTIVE: ${memory.objective} ${objectiveTarget ? `Target: ${objectiveTarget.label} #${objectiveTarget.id} at ${where(objectiveTarget)}. ` : objective?.done ? `Target ${objective.label} destroyed. ` : "Target not found yet. "}` : "";
+  const objectiveNote = memory.objective ? `MISSION OBJECTIVE: ${memory.objective} ${objectiveTarget ? `Target: ${objectiveTarget.label} #${objectiveTarget.id} at ${where(objectiveTarget)}. ` : objective?.captured ? `Target ${objective.label} captured. ` : objective?.done ? `Target ${objective.label} destroyed. ` : "Target not found yet. "}` : "";
   const readyNote = state.forceReadiness.ready
     ? `Force READY (${state.forceReadiness.reason}): choose a supplied attack now.`
     : `Force not ready (${state.forceReadiness.reason}); ${readiness.threshold} combat units needed, ${readiness.combatUnits} exist.`;
@@ -695,7 +699,7 @@ export function candidateGroups(api, catalog, snapshot, memory) {
     "tactics",
     `${objectiveNote}${readyNote} Choose the combat mission to win by destroying the enemy base; protect the base from nearby attackers first. Keep a useful active attack; do not oscillate between attack and retreat. When the enemy base is unknown, advance through a supplied frontier. Combat orders cost zero credits.${assessment.level ? " " + escalationAdvice(assessment) : ""}`,
   );
-  groups.tactics.criteria.wait = "Keep an active useful combat mission, or wait when no suitable mission is supplied. Do not keep rallying after the force is ready and an attack target is supplied. Credit balance is irrelevant to movement and attack orders.";
+  groups.tactics.criteria.wait = "Keep the current mission; nothing supplied is better.";
   state.combat = {
     tanks: tanks.length,
     army: army.length,
@@ -709,7 +713,8 @@ export function candidateGroups(api, catalog, snapshot, memory) {
   if (active.length) {
     const ids = active.map((u) => u.id);
     // The objective is offered whatever the force size: the player asked for it. It comes first,
-    // except that a threatened base is defended first (and then it is not automatic).
+    // except that a threatened base is defended first. It is automatic only when the force is ready
+    // (or the stall rule applies): otherwise it would feed small groups in one after another.
     const offerObjective = () => objectiveTarget && tactics(
       `objective_${objectiveTarget.id}`,
       `OBJECTIVE: destroy ${objectiveTarget.label} #${objectiveTarget.id} ${objectiveTarget.visible ? "at" : "last seen at"} ${where(objectiveTarget)} with ${ids.length} units.`,
@@ -722,7 +727,7 @@ export function candidateGroups(api, catalog, snapshot, memory) {
         x: objectiveTarget.x,
         y: objectiveTarget.y,
         objective: true,
-        ...(threatening.length ? {} : { auto: 2 }),
+        ...(threatening.length || !ready ? {} : { auto: 2 }),
       },
     );
     if (!threatening.length) offerObjective();
@@ -766,10 +771,16 @@ export function candidateGroups(api, catalog, snapshot, memory) {
     const antiAirOnly = (e) => !hitsGround(e) && activeWeapons(e, catalog).some((w) => (w.damage ?? 0) > 0 && w.aa);
     // Every nearby defense that can shoot at ground troops gets its own option: a road lined with
     // pillboxes on both sides needs both sides cleared. Anti-air sites never shoot back at the column.
-    const defenses = candidates.filter(hitsGround).sort((a, b) => gap(a) - gap(b)).slice(0, 3);
-    const rank = (e) => { const r = catalog[e.name] ?? {}; return r.yard ? 0 : r.factory ? 1 : r.refinery ? 2 : r.power > 0 ? 3 : 4; };
-    const others = candidates.filter((e) => !hitsGround(e) && !antiAirOnly(e)).sort((a, b) => rank(a) - rank(b) || gap(a) - gap(b));
-    const offered = [...others.slice(0, Math.max(3, MAX_ASSAULTS - defenses.length)), ...defenses];
+    // With an objective the list is shorter, so the readiness note and the objective stay within what
+    // a small model reads. Defenses guarding the objective come first among the defenses.
+    const cap = objectiveTarget ? MAX_ASSAULTS_WITH_OBJECTIVE : MAX_ASSAULTS;
+    const guardsObjective = (e) => !!objectiveTarget && Math.hypot(e.tile.rx - objectiveTarget.x, e.tile.ry - objectiveTarget.y) <= OBJECTIVE_GUARD_RADIUS;
+    const defenses = candidates.filter(hitsGround).sort((a, b) => Number(guardsObjective(b)) - Number(guardsObjective(a)) || gap(a) - gap(b)).slice(0, cap === MAX_ASSAULTS ? 3 : 2);
+    // Anti-air sites do not take a defense slot but stay at the end of the list: when nothing else is
+    // left they are what remains to destroy.
+    const rank = (e) => { const r = catalog[e.name] ?? {}; return antiAirOnly(e) ? 5 : r.yard ? 0 : r.factory ? 1 : r.refinery ? 2 : r.power > 0 ? 3 : 4; };
+    const others = candidates.filter((e) => !hitsGround(e)).sort((a, b) => rank(a) - rank(b) || gap(a) - gap(b));
+    const offered = [...others.slice(0, Math.max(cap === MAX_ASSAULTS ? 3 : 2, cap - defenses.length)), ...defenses];
     if (ready && !threatening.length)
       for (const enemy of offered)
         tactics(
@@ -783,6 +794,8 @@ export function candidateGroups(api, catalog, snapshot, memory) {
             targetId: enemy.id,
             x: enemy.tile.rx,
             y: enemy.tile.ry,
+            // Clearing a pillbox in front of the objective is part of the objective attack.
+            ...(guardsObjective(enemy) && hitsGround(enemy) ? { clearsObjective: true } : {}),
           },
         );
     if (!structures.length && ready && !threatening.length && memory.enemyBuildings.size && !objectiveTarget) {
@@ -910,7 +923,8 @@ export function acceptMission(memory, action, execution, tick) {
   }
   const keep = old && old.mode === action.mode && sameTarget(old, action);
   memory.mission = { ...action, ids, since: keep ? old.since : tick, issuedAt: tick };
-  if (action.mode === "attack" && !(memory.missionLock && sameTarget(memory.missionLock, action) && tick - memory.missionLock.tick < MISSION_LOCK_TICKS))
+  // Re-issuing the same target never extends the lock.
+  if (action.mode === "attack" && !sameTarget(memory.missionLock, action))
     memory.missionLock = { targetId: action.targetId, x: action.x, y: action.y, tick, objective: !!action.objective };
   return memory.mission;
 }
@@ -920,7 +934,7 @@ export function acceptMission(memory, action, execution, tick) {
 export function missionGate(api, memory, action) {
   const lock = memory.missionLock, tick = api.tick();
   if (action?.type !== "mission" || !lock || tick - lock.tick >= MISSION_LOCK_TICKS) return undefined;
-  if (!["attack", "rally"].includes(action.mode) || action.objective || sameTarget(lock, action)) return undefined;
+  if (!["attack", "rally"].includes(action.mode) || action.objective || action.clearsObjective || sameTarget(lock, action)) return undefined;
   let hostile = []; try { hostile = api.units("hostile") ?? []; } catch { hostile = []; }
   const alive = lock.targetId === undefined ? true
     : [...api.units("enemy"), ...hostile].some((u) => u.id === lock.targetId) || !api.map.visible(lock.x, lock.y);
@@ -1096,46 +1110,74 @@ export function findVisibleOre(api, origin) {
 // Units shot from beyond their own reach used to stand and take it (a conscript, range 4, next to a
 // pillbox, range 5.5, kept firing at something else). Each one now either closes in on the shooter,
 // with nearby comrades, when it can hurt it, or steps out of its range when it cannot.
-export const THREAT_REPLY_TICKS = 60, THREAT_SQUAD_RADIUS = 6;
+export const THREAT_REPLY_TICKS = 60, THREAT_SQUAD_RADIUS = 6, THREAT_UNITS_PER_PASS = 32, THREAT_CANDIDATES = 6,
+  THREAT_REPORT_TICKS = 150, FALL_BACK_TICKS = 450;
 export function respondToThreats(api, catalog, memory, emit, mobile, enemies, skip = new Set()) {
   const tick = api.tick(), Air = api.ZoneType?.Air ?? 1;
-  memory.threatReplies ??= new Map(); memory.lastHealth ??= new Map(); memory.orders ??= new Map();
-  const reach = (e) => Math.max(0, ...activeWeapons(e, catalog).filter((w) => (w.damage ?? 0) > 0 && w.ag !== false).map((w) => w.range ?? 0));
+  memory.threatReplies ??= new Map(); memory.lastHealth ??= new Map(); memory.orders ??= new Map(); memory.fallBack ??= new Map();
   const hurts = (a, t) => activeWeapons(a, catalog).some((w) => weaponEffectiveness(w, [t], catalog, api) > 0);
   const cooling = (u) => tick - (memory.threatReplies.get(u.id) ?? -Infinity) < THREAT_REPLY_TICKS;
-  const handled = new Set();
-  const ground = enemies.filter((e) => e.zone !== Air);
-  for (const u of mobile) {
+  // Per enemy, once: its ground reach. Anything farther than that (+2 tiles) from a unit is skipped
+  // by plain distance before any weapon or range query (this runs every 150 ms).
+  const ground = [];
+  for (const e of enemies) {
+    if (e.zone === Air) continue;
+    const reach = Math.max(0, ...activeWeapons(e, catalog).filter((w) => (w.damage ?? 0) > 0 && w.ag !== false).map((w) => w.range ?? 0));
+    if (reach > 0) ground.push({ e, reach });
+  }
+  const ownReach = (u) => Math.max(0, ...activeWeapons(u, catalog).filter((w) => (w.damage ?? 0) > 0).map((w) => w.range ?? 0));
+  const handled = new Set(), replies = [];
+  const order = mobile.length ? (memory.threatCursor ?? 0) % mobile.length : 0;
+  let examined = 0;
+  for (let i = 0; i < mobile.length; i++) {
+    const u = mobile[(order + i) % mobile.length];
     const before = memory.lastHealth.get(u.id);
     memory.lastHealth.set(u.id, u.hitPoints ?? 0);
-    if (handled.has(u.id) || skip.has(u.id) || u.isDeployed || u.zone === Air || cooling(u)) continue;
-    const outranged = ground.filter((e) => hurts(e, u) && canFireAt(api, catalog, e, u) && !canFireAt(api, catalog, u, e));
+    if (handled.has(u.id) || skip.has(u.id) || u.isDeployed || u.zone === Air || cooling(u) || examined >= THREAT_UNITS_PER_PASS) continue;
+    const near = ground.map((g) => ({ ...g, d: distance(g.e.tile, u.tile) })).filter((g) => g.d <= g.reach + 2);
+    if (!near.length) continue;
+    examined++;
+    memory.threatCursor = (order + i + 1) % mobile.length;
+    const closest = near.sort((a, b) => a.d - b.d).slice(0, THREAT_CANDIDATES);
+    const reachU = ownReach(u);
+    const outranged = closest.filter((g) => g.d > reachU && hurts(g.e, u) && canFireAt(api, catalog, g.e, u) && !canFireAt(api, catalog, u, g.e));
     // Losing health with nothing in our own range: whoever could reach us is the likely shooter.
-    const hurt = before !== undefined && (u.hitPoints ?? 0) < before && !ground.some((e) => canFireAt(api, catalog, u, e));
-    const attackers = outranged.length ? outranged : hurt ? ground.filter((e) => hurts(e, u) && distance(e.tile, u.tile) <= reach(e) + 1.5) : [];
-    const shooter = attackers.sort((a, b) => distance(a.tile, u.tile) - distance(b.tile, u.tile))[0];
+    const hurt = !outranged.length && before !== undefined && (u.hitPoints ?? 0) < before &&
+      !closest.some((g) => g.d <= reachU + 1 && canFireAt(api, catalog, u, g.e));
+    const shooter = (outranged.length ? outranged : hurt ? closest.filter((g) => g.d <= g.reach + 1.5 && hurts(g.e, u)) : [])[0];
     if (!shooter) continue;
-    const name = catalog[shooter.name]?.label ?? shooter.name;
-    if (hurts(u, shooter)) {
+    const e = shooter.e;
+    if (hurts(u, e)) {
       const squad = [u, ...mobile.filter((o) => o !== u && !handled.has(o.id) && !skip.has(o.id) && !o.isDeployed && !cooling(o) &&
-        distance(o.tile, u.tile) <= THREAT_SQUAD_RADIUS && hurts(o, shooter) && !canFireAt(api, catalog, o, shooter))];
+        distance(o.tile, u.tile) <= THREAT_SQUAD_RADIUS && distance(o.tile, e.tile) > ownReach(o) && hurts(o, e))];
       const ids = squad.map((o) => o.id);
-      api.attack(ids, shooter.id);
-      for (const id of ids) { handled.add(id); memory.threatReplies.set(id, tick); memory.orders.set(id, { tick, targetId: shooter.id, threatReply: true }); }
-      emit({ kind: "micro", tick, description: `#${u.id} 受到 ${name} #${shooter.id} 射程外攻击，${ids.length} 个单位抵近还击`, ids, targetId: shooter.id, reply: "close_in" });
+      api.attack(ids, e.id);
+      for (const id of ids) { handled.add(id); memory.threatReplies.set(id, tick); memory.orders.set(id, { tick, targetId: e.id, threatReply: true }); }
+      replies.push({ ids, targetId: e.id, name: catalog[e.name]?.label ?? e.name, reply: "close_in" });
     } else {
-      const dx = u.tile.rx - shooter.tile.rx, dy = u.tile.ry - shooter.tile.ry, len = Math.hypot(dx, dy) || 1;
-      const size = api.map.size?.() ?? { width: Infinity, height: Infinity }, back = reach(shooter) + 3;
-      const x = Math.round(Math.max(0, Math.min(size.width - 1, shooter.tile.rx + dx / len * back)));
-      const y = Math.round(Math.max(0, Math.min(size.height - 1, shooter.tile.ry + dy / len * back)));
+      const dx = u.tile.rx - e.tile.rx, dy = u.tile.ry - e.tile.ry, len = Math.hypot(dx, dy) || 1;
+      const size = api.map.size?.() ?? { width: Infinity, height: Infinity }, back = shooter.reach + 3;
+      const x = Math.round(Math.max(0, Math.min(size.width - 1, e.tile.rx + dx / len * back)));
+      const y = Math.round(Math.max(0, Math.min(size.height - 1, e.tile.ry + dy / len * back)));
       api.move([u.id], x, y);
       handled.add(u.id); memory.threatReplies.set(u.id, tick); memory.orders.set(u.id, { tick, threatReply: true });
-      emit({ kind: "micro", tick, description: `#${u.id} 受到 ${name} #${shooter.id} 攻击但打不动它，后撤到 (${x},${y})`, ids: [u.id], targetId: shooter.id, reply: "fall_back", target: { x, y } });
+      // The mission loop must not walk it straight back into the same fire for a while.
+      memory.fallBack.set(u.id, { tick, x: e.tile.rx, y: e.tile.ry, reach: shooter.reach });
+      replies.push({ ids: [u.id], targetId: e.id, name: catalog[e.name]?.label ?? e.name, reply: "fall_back", target: { x, y } });
     }
+  }
+  // One report per pass at most, and not more than once every THREAT_REPORT_TICKS, so the battle log
+  // keeps its other entries.
+  if (replies.length && tick - (memory.lastThreatReport ?? -Infinity) >= THREAT_REPORT_TICKS) {
+    memory.lastThreatReport = tick;
+    const text = (r) => r.reply === "close_in" ? `${r.ids.length} 个单位抵近还击 ${r.name} #${r.targetId}` : `#${r.ids[0]} 打不动 ${r.name} #${r.targetId}，后撤到 (${r.target.x},${r.target.y})`;
+    emit({ kind: "micro", tick, description: `射程外受击：${replies.slice(0, 3).map(text).join("；")}${replies.length > 3 ? `；另 ${replies.length - 3} 起` : ""}`,
+      replies: replies.length, ids: replies.flatMap((r) => r.ids), reply: replies[0].reply, targetId: replies[0].targetId });
   }
   const living = new Set(mobile.map((u) => u.id));
   for (const id of memory.lastHealth.keys()) if (!living.has(id)) memory.lastHealth.delete(id);
   for (const [id, t] of memory.threatReplies) if (!living.has(id) || tick - t > THREAT_REPLY_TICKS * 10) memory.threatReplies.delete(id);
+  for (const [id, f] of memory.fallBack) if (!living.has(id) || tick - f.tick > FALL_BACK_TICKS) memory.fallBack.delete(id);
   return handled;
 }
 
@@ -1287,6 +1329,9 @@ export function maintainBattle(api, catalog, memory, emit) {
       u.isIdle &&
       (!last || tick - last.tick > 90)
     ) {
+      // A unit that just fell back from a shooter it cannot hurt is not sent back into its range.
+      const fled = memory.fallBack?.get(u.id);
+      if (fled && tick - fled.tick < FALL_BACK_TICKS) continue;
       if (Math.hypot(u.tile.rx - mission.x, u.tile.ry - mission.y) > 3) {
         const target = mission.mode === 'attack' && (enemies.find(e=>e.id===mission.targetId) ??
           (mission.objective ? (api.units('hostile') ?? []).find(e=>e.id===mission.targetId) : undefined));
@@ -1566,10 +1611,11 @@ export async function attachJevPlayer(api, options = {}) {
         const autos = Object.entries(g.actions).filter(([k, a]) => k !== "wait" && a && Number.isFinite(a.auto)).sort((a, b) => a[1].auto - b[1].auto);
         if (!answer || !autos.length) { if (!autos.length) delete memory.autoDeclines[id]; continue; }
         const [choice, action] = autos[0];
-        // With the player's objective on offer, going back home to gather counts as declining it.
-        const declined = answer.choice === "wait" || action.objective && answer.choice === "assemble_force";
-        memory.autoDeclines[id] = declined ? (memory.autoDeclines[id] ?? 0) + 1 : 0;
+        memory.autoDeclines[id] = answer.choice === "wait" ? (memory.autoDeclines[id] ?? 0) + 1 : 0;
         if (memory.autoDeclines[id] < action.auto) continue;
+        // Already doing exactly this: the fallback does not re-send the column (or renew its lock).
+        const running = memory.mission;
+        if (action.type === "mission" && running && running.mode === action.mode && sameTarget(running, action)) { memory.autoDeclines[id] = 0; continue; }
         const execution = missionGate(api, memory, action) ?? executeCandidate(api, action, catalog);
         memory.autoDeclines[id] = 0;
         if (execution.accepted) afterAccepted(action, execution);

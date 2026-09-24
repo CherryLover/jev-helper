@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { attachJevPlayer, collectState, candidateGroups, executeCandidate, forceReadiness, acceptMission, missionGate, respondToThreats, maintainBattle,
-  MISSION_LOCK_TICKS, THREAT_REPLY_TICKS, MAX_ASSAULTS, ENGAGE_RADIUS } from '../src/player/werhd-jev-player.mjs';
-import { objectiveKeywords, trackObjective } from '../src/player/werhd-jev-objective.mjs';
+  MISSION_LOCK_TICKS, THREAT_REPLY_TICKS, THREAT_UNITS_PER_PASS, THREAT_CANDIDATES, THREAT_REPORT_TICKS, FALL_BACK_TICKS, MAX_ASSAULTS, MAX_ASSAULTS_WITH_OBJECTIVE, ENGAGE_RADIUS } from '../src/player/werhd-jev-player.mjs';
+import { objectiveKeywords, parseObjective, matchesObjective, trackObjective } from '../src/player/werhd-jev-objective.mjs';
 
 // From two 0.5.9 reports (local Laya model): the player set "摧毁五角大楼" as the match objective, but
 // the Pentagon never appeared among the options (three Patriot sites took the defense slots), the
@@ -216,7 +216,7 @@ test('a unit shot from beyond its reach closes in with its neighbours, or falls 
   const events = [];
   respondToThreats(w.api, catalog, w.memory, e => events.push(e), [conscript, buddy], w.enemies);
   assert.deepEqual(w.calls, [['attack', [30, 31], 920]], 'the conscript (range 4) and its neighbour go for the pillbox (range 5.5) 5 tiles away');
-  assert.match(events[0].description, /#30 受到 Pill Box #920 射程外攻击，2 个单位抵近还击/);
+  assert.match(events[0].description, /^射程外受击：2 个单位抵近还击 Pill Box #920$/);
   w.setTick(3000 + THREAT_REPLY_TICKS - 1);
   respondToThreats(w.api, catalog, w.memory, e => events.push(e), [conscript, buddy], w.enemies);
   assert.equal(w.calls.length, 1, 'no new order during the cooldown');
@@ -228,7 +228,7 @@ test('a unit shot from beyond its reach closes in with its neighbours, or falls 
   const t = world({ own:[...home(), lone], enemies:[tank] });
   respondToThreats(t.api, catalog, t.memory, e => events.push(e), [lone], [tank]);
   assert.deepEqual(t.calls, [['move', [40], 16, 30]], 'back to 9 tiles from a range-6 tank');
-  assert.match(events.at(-1).description, /打不动它，后撤到 \(16,30\)/);
+  assert.match(events.at(-1).description, /#40 打不动 Rhino Tank #701，后撤到 \(16,30\)/);
   // Wired into the regular micro loop.
   const m = world({ own:[...home(), unit(30,'GI',3,50,50,{isIdle:false})], enemies:[unit(920,'PILL',2,55,50)] });
   const micro = [];
@@ -253,4 +253,145 @@ test('the defense question is asked only while the base is threatened', () => {
   const raided = world({ own:[...home(), ...squad(4, 14, 14)], enemies:[unit(700,'TANK',7,18,18)], offers:{1:[{name:'SENTRY',type:2}],2:[{name:'GI',type:3}]} });
   groups = candidateGroups(raided.api, catalog, collectState(raided.api, catalog), raided.memory);
   assert.ok(groups.defenses, 'under attack the question is back');
+});
+
+// Review of 0.6.0 (same day): the objective option itself became a way of feeding units in, anti-air
+// sites left nothing to attack at the end, and a few loose ends around the lock, parsing and speed.
+const decide = async (w, options, pick, turns) => {
+  const p = await attachJevPlayer(w.api, { catalog, intervalMs:1e9, wakeIntervalMs:0, disableMicro:true, maxDecisions:50, ...options,
+    requestDecision:async body => ({ answers:Object.fromEntries(Object.keys(body.groups).map(id => [id, { choice:id === 'tactics' ? pick(p) : 'wait', confidence:1 }])) }) });
+  await new Promise(r => setTimeout(r, 5));
+  for (let t = 1; t < turns; t++) { w.setTick(3000 + t * 36); w.api._tick({}); await new Promise(r => setTimeout(r, 5)); }
+  p.stop('manual');
+  return p;
+};
+
+test('the objective is automatic only for a ready force; rallying is not a decline; a running objective is not re-sent', async () => {
+  // Three soldiers with a barracks: listed, never automatic.
+  const few = world({ own:[...home(), ...squad(3, 14, 14)], enemies:enemyBase() });
+  few.memory.objective = '摧毁五角大楼';
+  const g = candidateGroups(few.api, catalog, collectState(few.api, catalog), few.memory);
+  assert.ok(g.tactics.actions.objective_990); assert.equal(g.tactics.actions.objective_990.auto, undefined);
+  let w = world({ own:[...home(), ...squad(3, 14, 14)], enemies:enemyBase() });
+  await decide(w, { objective:'摧毁五角大楼' }, () => 'wait', 6);
+  assert.ok(!w.calls.some(c => c[0] === 'attack'), 'three soldiers are not sent at the Pentagon');
+  // End of the second report: escalation 2, 8 of 16 soldiers, the model keeps choosing to gather.
+  w = world({ own:[...home(), ...squad(8, 14, 14)], enemies:enemyBase() });
+  const p = await decide(w, { objective:'摧毁五角大楼' }, (pl) => { pl.memory.escalation = { level:2, changedAt:2900, reason:'test' }; return 'assemble_force'; }, 6);
+  assert.ok(!w.calls.some(c => c[0] === 'attack'), 'gathering is respected, nobody is fed in');
+  assert.ok(!p.status.events.some(e => e.reason === 'mission_locked'), 'and the gather order is never locked out');
+  // A ready force already attacking the objective: the fallback does not re-send it every two turns.
+  w = world({ own:[...home(), ...squad(12)], enemies:enemyBase(), offers:{} });
+  const q = await decide(w, { objective:'摧毁五角大楼' }, () => 'wait', 10);
+  assert.equal(w.calls.filter(c => c[0] === 'attack' && c[2] === 990).length, 1);
+  assert.equal(q.status.events.filter(e => e.auto).length, 1);
+  assert.equal(q.memory.missionLock.tick, 3036, 'the lock is not renewed by repeats');
+});
+
+test('"already attacking" needs 75% of the threshold, so a handful of survivors cannot bypass it', () => {
+  const w = world({ own:home() });
+  const state = { queues:[], airThreatCount:0, mobileAntiAirCount:0 };
+  const at = (n) => { const army = squad(n); return forceReadiness(w.api, catalog, state, army, [], w.memory); };
+  w.memory.mission = { mode:'attack', targetId:990, ids:[10] };
+  assert.equal(at(5).ready, false, '5 of 8 soldiers still "attacking" are not a committed force');
+  w.memory.readinessLatch = undefined;
+  assert.equal(at(6).ready, true); assert.equal(at(6).reason, 'an attack is already committed');
+});
+
+test('when only anti-air sites are left they are still listed, last', () => {
+  const w = world({ own:[...home(), ...squad(12)], enemies:[unit(910,'PATRIOT',2,50,44), unit(911,'PATRIOT',2,52,44)] });
+  let g = candidateGroups(w.api, catalog, collectState(w.api, catalog), w.memory);
+  assert.deepEqual(choices(g.tactics).filter(k => k.startsWith('assault_')), ['assault_910', 'assault_911']);
+  const mixed = world({ own:[...home(), ...squad(12)], enemies:[unit(910,'PATRIOT',2,50,44), unit(803,'POWER',2,60,60), unit(920,'PILL',2,59,47)] });
+  g = candidateGroups(mixed.api, catalog, collectState(mixed.api, catalog), mixed.memory);
+  assert.deepEqual(choices(g.tactics).filter(k => k.startsWith('assault_')), ['assault_803', 'assault_910', 'assault_920'], 'anti-air after the other buildings, no defense slot');
+});
+
+test('abandoning a failed attack also clears its lock; pillboxes guarding the objective are not locked out', () => {
+  const w = world({ own:[...home(), ...squad(12)], enemies:enemyBase(), tick:10000 });
+  acceptMission(w.memory, { type:'mission', mode:'attack', ids:[10], targetId:801, x:62, y:60 }, { ids:[10] }, 9990);
+  w.memory.combatSamples = [{ tick:8600, lost:0, killed:0 }];
+  w.memory.ledger = { seenOwn:new Map(), seenEnemy:new Map(), seeded:true, ownBuilt:0, ownUnitsLost:6, ownBuildingsLost:0, enemyUnitsDestroyed:1, enemyBuildingsDestroyed:0 };
+  const g = candidateGroups(w.api, catalog, collectState(w.api, catalog), w.memory);
+  assert.equal(w.memory.escalation.level, 1); assert.equal(w.memory.mission, undefined);
+  assert.equal(w.memory.missionLock, undefined, 'the lock goes with the abandoned mission');
+  assert.equal(missionGate(w.api, w.memory, g.tactics.actions.assemble_force), undefined, 'regrouping is accepted at once');
+  // Attacking the objective: the pillbox 2 tiles from the Pentagon may be cleared, a far one may not.
+  const o = world({ own:[...home(), ...squad(12)], enemies:[...enemyBase(), unit(930,'PILL',2,30,60)] });
+  o.memory.objective = '摧毁五角大楼';
+  const og = candidateGroups(o.api, catalog, collectState(o.api, catalog), o.memory);
+  acceptMission(o.memory, og.tactics.actions.objective_990, { ids:[10] }, 3000);
+  assert.equal(og.tactics.actions.assault_920.clearsObjective, true);
+  assert.equal(missionGate(o.api, o.memory, og.tactics.actions.assault_920), undefined);
+  assert.equal(og.tactics.actions.assault_930?.clearsObjective, undefined);
+  assert.equal(missionGate(o.api, o.memory, { type:'mission', mode:'attack', ids:[10], targetId:930, x:30, y:60 })?.reason, 'mission_locked');
+});
+
+test('objective parsing: clauses, protected names, whole words, capture', () => {
+  assert.deepEqual(parseObjective('摧毁五角大楼，保护白宫').words, ['pentagon']);
+  assert.deepEqual(parseObjective('destroy the Pentagon and protect the White House').guarded, ['white house']);
+  assert.deepEqual(parseObjective('摧毁五角大楼和白宫').words, ['pentagon', 'white house'], 'a clause without a verb inherits it');
+  assert.equal(matchesObjective('摧毁五角大楼，保护白宫', ['pentagon'], { label:'White House' }, 'CAWHITE'), false);
+  assert.equal(matchesObjective('destroy the Pentagon', ['pentagon'], { label:'Pent' }, 'X'), false, 'no partial words');
+  assert.equal(matchesObjective('destroy everything', [], { label:'Thing' }, 'X'), false);
+  assert.ok(matchesObjective('destroy the Pentagon', ['pentagon'], { label:'Pentagon Building' }, 'CAPENT'));
+  // The White House is much nearer, but it is to be protected.
+  catalog.WHITE = { label:'White House', armor:'concrete' };
+  const w = world({ own:[...home(), ...squad(12)], enemies:enemyBase(), neutral:[unit(996,'WHITE',2,20,20)] });
+  w.memory.objective = '摧毁五角大楼，保护白宫';
+  assert.equal(trackObjective(w.api, catalog, w.memory, { rx:10, ry:10 }).id, 990);
+  // Taken by our engineer: captured, not destroyed, and no longer offered.
+  const enemies = enemyBase(), own = [...home(), ...squad(12)];
+  const c = world({ own, enemies });
+  c.memory.objective = '摧毁五角大楼';
+  candidateGroups(c.api, catalog, collectState(c.api, catalog), c.memory);
+  own.push(...enemies.splice(enemies.findIndex(e => e.id === 990), 1));
+  const snap = collectState(c.api, catalog), g = candidateGroups(c.api, catalog, snap, c.memory);
+  assert.equal(snap.state.objectiveTarget.captured, true);
+  assert.ok(!g.tactics.actions.objective_990); assert.match(g.tactics.instructions, /Target Pentagon captured/);
+});
+
+test('with an objective the assault list is shorter and the wait option is one line', () => {
+  const extra = [unit(804,'POWER',2,66,62), unit(805,'POWER',2,68,62), unit(806,'EREF',2,70,62), unit(921,'PILL',2,57,49), unit(922,'PILL',2,55,49)];
+  const w = world({ own:[...home(), ...squad(12)], enemies:[...enemyBase(), ...extra] });
+  w.memory.objective = '摧毁五角大楼';
+  const g = candidateGroups(w.api, catalog, collectState(w.api, catalog), w.memory);
+  const assaults = choices(g.tactics).filter(k => k.startsWith('assault_'));
+  assert.equal(assaults.length, MAX_ASSAULTS_WITH_OBJECTIVE);
+  assert.equal(assaults.filter(k => ['assault_920', 'assault_921', 'assault_922'].includes(k)).length, 2, 'two defenses, those next to the Pentagon');
+  assert.ok(g.tactics.criteria.wait.length < 60);
+  const plain = world({ own:[...home(), ...squad(12)], enemies:[...enemyBase(), ...extra] });
+  const pg = candidateGroups(plain.api, catalog, collectState(plain.api, catalog), plain.memory);
+  assert.equal(choices(pg.tactics).filter(k => k.startsWith('assault_')).length, MAX_ASSAULTS);
+});
+
+test('threat replies: bounded work in a big battle, one report per pass, no walking back into fire', () => {
+  // 150 against 150, interleaved at close range.
+  const own = Array.from({ length:150 }, (_, i) => unit(100 + i, 'GI', 3, 20 + (i % 15) * 2, 20 + Math.floor(i / 15) * 2, { isIdle:false }));
+  const enemies = Array.from({ length:150 }, (_, i) => unit(5000 + i, i % 3 ? 'EGI' : 'PILL', i % 3 ? 3 : 2, 21 + (i % 15) * 2, 21 + Math.floor(i / 15) * 2));
+  const w = world({ own:[...home(), ...own], enemies });
+  let queries = 0; w.api.weaponVs = () => { queries++; return undefined; };
+  const events = [];
+  respondToThreats(w.api, catalog, w.memory, e => events.push(e), own, enemies);
+  assert.ok(queries <= THREAT_UNITS_PER_PASS * THREAT_CANDIDATES * 3, `${queries} range queries in one pass`);
+  assert.equal(events.length, 1, 'all replies of a pass are one report');
+  assert.ok(events[0].replies >= 2); assert.match(events[0].description, /^射程外受击：.*抵近还击.*；/);
+  const cursor = w.memory.threatCursor;
+  assert.ok(cursor >= THREAT_UNITS_PER_PASS, 'at most a batch of units is examined per pass');
+  w.setTick(3000 + THREAT_REPLY_TICKS);
+  respondToThreats(w.api, catalog, w.memory, e => events.push(e), own, enemies);
+  assert.equal(events.length, 1, `no second report within ${THREAT_REPORT_TICKS} ticks`);
+  assert.notEqual(w.memory.threatCursor, cursor, 'the next pass continues with the following units');
+  // A conscript that fell back from a tank is not sent straight back by its attack mission.
+  const lone = unit(40,'GI',3,20,30), tank = unit(701,'TANK',7,25,30);
+  const t = world({ own:[...home(), lone], enemies:[tank] });
+  t.memory.mission = { mode:'attack', ids:[40], targetId:701, x:25, y:30, since:3000 };
+  maintainBattle(t.api, catalog, t.memory, () => {});
+  assert.deepEqual(t.calls.map(c => c[0]), ['move']);
+  Object.assign(lone, { tile:{ rx:16, ry:30 }, isIdle:true });
+  t.calls.length = 0; t.setTick(3100); maintainBattle(t.api, catalog, t.memory, () => {});
+  assert.ok(!t.calls.some(c => c[1].includes(40) && c[0] !== 'move'), 'not re-sent at the tank');
+  t.calls.length = 0; t.setTick(3000 + FALL_BACK_TICKS + 1); lone.tile = { rx:10, ry:30 };
+  maintainBattle(t.api, catalog, t.memory, () => {});
+  assert.ok(t.calls.some(c => c[1].includes(40)), 'the mission resumes later');
 });

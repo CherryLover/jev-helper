@@ -36,25 +36,43 @@ export const OBJECTIVE_NAMES = [
 const PROTECT = /保护|守护|守住|保卫|护送|营救|救出|占领|夺取|俘获|protect|defend|guard|escort|rescue|capture|save/i;
 const DESTROY = /摧毁|消灭|击毁|炸毁|拆除|破坏|打掉|推平|摧垮|destroy|eliminate|kill|demolish|raze|take out|wipe out/i;
 
-// "Protect the Pentagon" or "capture the lab" must never turn into an attack order.
-const protectOnly = (text) => PROTECT.test(text) && !DESTROY.test(text);
-export function objectiveKeywords(text) {
-  if (!text || protectOnly(text)) return [];
-  const out = new Set();
-  for (const [pattern, words] of OBJECTIVE_NAMES) if (pattern.test(text)) words.forEach(w => out.add(w));
-  const lower = text.toLowerCase();
-  // English objective text: any known English name written directly.
-  for (const [, words] of OBJECTIVE_NAMES) for (const w of words) if (w.length >= 4 && new RegExp(`\\b${w}\\b`).test(lower)) out.add(w);
-  return [...out];
+// Objectives are read clause by clause: "摧毁五角大楼，保护白宫" names one target and one building
+// that must never be attacked. A clause without a verb inherits the previous one ("摧毁A和B").
+const CLAUSE = /[，,。.;；！!？?、\n]|和|与|以及|然后|再|\band\b|\bthen\b/i;
+const escape = (w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// English names match whole words only ("Pent" is not "Pentagon", "destroy everything" is not "Thing").
+const wordIn = (hay, word) => new RegExp(`(^|[^a-z0-9])${escape(word)}([^a-z0-9]|$)`).test(hay);
+export function parseObjective(text) {
+  const destroy = [], protect = [];
+  let intent = 'destroy';
+  for (const clause of String(text ?? '').split(CLAUSE).map(c => c?.trim()).filter(Boolean)) {
+    if (PROTECT.test(clause) && !DESTROY.test(clause)) intent = 'protect';
+    else if (DESTROY.test(clause)) intent = 'destroy';
+    (intent === 'destroy' ? destroy : protect).push(clause.toLowerCase());
+  }
+  const namesIn = (clauses) => {
+    const out = new Set();
+    for (const c of clauses) for (const [pattern, words] of OBJECTIVE_NAMES) {
+      if (pattern.test(c)) words.forEach(w => out.add(w));
+      for (const w of words) if (w.length >= 4 && wordIn(c, w)) out.add(w);
+    }
+    return out;
+  };
+  const guarded = namesIn(protect);
+  return { words: [...namesIn(destroy)].filter(w => !guarded.has(w)), destroyText: destroy.join(' | '), protectText: protect.join(' | '), guarded: [...guarded] };
 }
+export const objectiveKeywords = (text) => parseObjective(text).words;
 
 export function matchesObjective(text, keywords, rule, name) {
-  if (!text || protectOnly(text)) return false;
+  const { destroyText, protectText, guarded } = parseObjective(text);
+  if (!destroyText) return false;
   const label = String(rule?.label ?? '').toLowerCase(), code = String(name ?? '').toLowerCase();
   const hay = `${label} ${code}`;
-  if (keywords.some(k => hay.includes(k))) return true;
-  // The objective names the building by its label ("destroy the Pentagon").
-  return label.length >= 4 && text.toLowerCase().includes(label);
+  // A building the objective says to protect is never a target, even if another clause also fits it.
+  if (guarded.some(w => wordIn(hay, w)) || (label.length >= 4 && wordIn(protectText, label))) return false;
+  if (keywords.some(k => wordIn(hay, k))) return 'name';
+  // The objective names the building by its label ("destroy the Pentagon"); a weaker match.
+  return label.length >= 4 && wordIn(destroyText, label) ? 'label' : false;
 }
 
 // Keeps memory.objectiveTarget up to date: the matched building (id, name, label, position, last
@@ -69,15 +87,18 @@ export function trackObjective(api, catalog, memory, from) {
   let target = memory.objectiveTarget;
   if (target && !target.done) {
     const seen = hostile.find(u => u.id === target.id);
+    // Taken by our engineer: no longer something to attack, and not a kill either.
+    const ours = !seen && (api.units('self') ?? []).some(u => u.id === target.id);
     if (seen) Object.assign(target, { x: seen.tile.rx, y: seen.tile.ry, lastSeen: tick, visible: true });
+    else if (ours) { Object.assign(target, { done: true, captured: true, capturedTick: tick, visible: true }); memory.objectiveDone.add(target.id); }
     else if (api.map.visible(target.x, target.y)) { Object.assign(target, { done: true, destroyedTick: tick, visible: false }); memory.objectiveDone.add(target.id); }
     else target.visible = false;
   }
   if (!target || target.done) {
     const words = memory.objectiveKeys.words;
     const origin = from ?? hostile[0]?.tile;
-    const match = hostile.filter(u => u.type === B && !memory.objectiveDone.has(u.id) && matchesObjective(text, words, catalog[u.name], u.name))
-      .sort((a, b) => origin ? distance(a.tile, origin) - distance(b.tile, origin) : 0)[0];
+    const match = hostile.map(u => ({ u, how: u.type === B && !memory.objectiveDone.has(u.id) && matchesObjective(text, words, catalog[u.name], u.name) }))
+      .filter(m => m.how).sort((a, b) => (a.how === 'name' ? 0 : 1) - (b.how === 'name' ? 0 : 1) || (origin ? distance(a.u.tile, origin) - distance(b.u.tile, origin) : 0))[0]?.u;
     if (match) target = memory.objectiveTarget = { id: match.id, name: match.name, label: catalog[match.name]?.label ?? match.name,
       x: match.tile.rx, y: match.tile.ry, firstSeen: tick, lastSeen: tick, visible: true };
   }

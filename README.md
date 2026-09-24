@@ -71,6 +71,8 @@ npm test
 npm run package
 ```
 
+推送到 `main`（含合并 PR）时 GitHub Actions 会自动执行 `npm test` 和 `npm run package`，并按 `package.json` 的版本号发布 Release（标签 `v<版本>`，附带 ZIP 和 SHA-256）。同一版本只发布一次，发新版前先同步修改 `package.json` 与 `public/manifest.json` 的版本号；PR 只做检查不发版。工作流见 `.github/workflows/release.yml`。
+
 开发构建只需 `npm run build`，然后在扩展管理页重新加载并刷新游戏页面。`dist/` 可直接加载；ZIP 位于 `artifacts/`。唯一构建依赖是 esbuild，无远程代码、无运行时外部依赖。
 
 界面预览可运行 `node tools/preview.mjs`，再打开 `http://127.0.0.1:4318/`。它使用模拟数据，只需输入任意测试字符串；不会连接模型或游戏，也不会打包进入扩展。

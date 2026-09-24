@@ -55,7 +55,13 @@ function renderMatchDetail(m){
  line(tr('matchReason',{reason:messages[m.reason]?tr(m.reason):m.reason||'—'}));
  drawChart($('match-economy'),m.history??[],[{key:'credits',label:'creditsLegend',color:'#d9b76f'},{key:'freeCredits',label:'freeLegend',color:'#91cbb1'}],config.language,tr('economyChart'));
  drawChart($('match-decision-chart'),m.history??[],[{key:'decisions',label:'decisionLegend',color:'#d9b76f'}],config.language,tr('decisionChart'));
+ drawChart($('match-force'),m.history??[],[{key:'ownUnits',label:'ownUnitsLegend',color:'#91cbb1'},{key:'ownBuildings',label:'ownBuildingsLegend',color:'#d9b76f'},{key:'enemyUnits',label:'enemyUnitsLegend',color:'#ed9383'}],config.language,tr('forceChart'));
+ drawChart($('match-loss'),m.history??[],[{key:'ownBuilt',label:'builtLegend',color:'#d9b76f'},{key:'ownLost',label:'lostLegend',color:'#ed9383'},{key:'enemyDestroyed',label:'destroyedLegend',color:'#91cbb1'}],config.language,tr('lossChart'));
+ for(const [id,value] of [['mark-victory','victory'],['mark-defeat','defeat']])$(id).setAttribute('aria-pressed',String(m.outcome===value&&m.outcomeMarked===true));
 }
+for(const [id,outcome] of [['mark-victory','victory'],['mark-defeat','defeat'],['mark-clear','']])$(id).addEventListener('click',async()=>{
+ if(!matchDetail)return;try{const m=await rpc({type:'MATCH_SET_OUTCOME',id:matchDetail.id,outcome});matchList=matchList.map(x=>x.id===m.id?{...x,outcome:m.outcome,outcomeMarked:m.outcomeMarked}:x);renderMatchList();renderMatchDetail(m);notify('matchMarked',true,{outcome:outcomeText(m)});}catch(e){notice(e.message);}
+});
 async function selectMatch(id){matchSelected=id;renderMatchList();try{renderMatchDetail(await rpc({type:'MATCH_GET',id}));}catch(e){notice(e.message);}}
 async function refreshMatches(){
  try{const {matches}=await rpc({type:'MATCHES_LIST'});matchList=matches;if(!matchList.some(m=>m.id===matchSelected))matchSelected=matchList[0]?.id;renderMatchList();
@@ -139,6 +145,8 @@ function renderCharts(s){
  drawChart($('decision-chart'),s.history??[],[{key:'decisions',label:'decisionLegend',color:'#d9b76f'}],config.language,tr('decisionChart'));
  drawChart($('economy-chart'),s.history??[],[{key:'credits',label:'creditsLegend',color:'#d9b76f'},{key:'freeCredits',label:'freeLegend',color:'#91cbb1'}],config.language,tr('economyChart'));
  $('accepted').textContent=tr('accepted',{n:s.acceptedActions??0});$('waits').textContent=tr('waits',{n:s.waits??0});
+ drawChart($('force-chart'),s.history??[],[{key:'ownUnits',label:'ownUnitsLegend',color:'#91cbb1'},{key:'ownBuildings',label:'ownBuildingsLegend',color:'#d9b76f'},{key:'enemyUnits',label:'enemyUnitsLegend',color:'#ed9383'}],config.language,tr('forceChart'));
+ drawChart($('loss-chart'),s.history??[],[{key:'ownBuilt',label:'builtLegend',color:'#d9b76f'},{key:'ownLost',label:'lostLegend',color:'#ed9383'},{key:'enemyDestroyed',label:'destroyedLegend',color:'#91cbb1'}],config.language,tr('lossChart'));
 }
 function eventText(e){
  if(config.language!=='en')return e.text;

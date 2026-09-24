@@ -230,3 +230,19 @@ test('a finished autopilot session becomes one match record with duration, count
   await assert.rejects(x.app.handle({type:'MATCH_GET',id:'nope'},extension));
   await x.app.handle({type:'MATCHES_CLEAR'},extension);assert.equal((await x.app.handle({type:'MATCHES_LIST'},extension)).matches.length,0);
 });
+
+test('a match that ended undefeated is labelled ended, and the popup can mark victory or defeat',async()=>{
+  const x=await setup(async()=>answer());
+  await x.app.handle({type:'EVENT',token:x.s.token,event:{kind:'observation',tick:101,credits:5000,state:{self:{credits:5000},ownArmyCount:6,gameSeconds:10},ledger:{ownUnits:6,ownBuildings:4,enemyUnits:2,enemyBuildings:1,ownBuilt:3,ownUnitsLost:1,ownBuildingsLost:0,enemyUnitsDestroyed:5,enemyBuildingsDestroyed:2}}},sender);
+  await x.app.handle({type:'EVENT',token:x.s.token,event:{kind:'stop',reason:'battle_ended'}},sender);
+  const {matches}=await x.app.handle({type:'MATCHES_LIST'},extension);
+  assert.equal(matches[0].outcome,'ended');assert.equal(matches[0].ledger.enemyUnitsDestroyed,5);
+  const full=await x.app.handle({type:'MATCH_GET',id:matches[0].id},extension);
+  assert.equal(full.history[0].ownUnits,6);assert.equal(full.history[0].ownLost,1);assert.equal(full.history[0].enemyDestroyed,7);
+  await assert.rejects(x.app.handle({type:'MATCH_SET_OUTCOME',id:matches[0].id,outcome:'victory'},sender));
+  await assert.rejects(x.app.handle({type:'MATCH_SET_OUTCOME',id:matches[0].id,outcome:'draw'},extension));
+  const marked=await x.app.handle({type:'MATCH_SET_OUTCOME',id:matches[0].id,outcome:'victory'},extension);
+  assert.equal(marked.outcome,'victory');assert.equal(marked.outcomeMarked,true);
+  assert.equal((await x.app.handle({type:'MATCHES_LIST'},extension)).matches[0].outcome,'victory');
+  const cleared=await x.app.handle({type:'MATCH_SET_OUTCOME',id:matches[0].id,outcome:''},extension);assert.equal(cleared.outcomeMarked,false);
+});

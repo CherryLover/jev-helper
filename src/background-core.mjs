@@ -30,11 +30,12 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
     const s=await getSession(tabId);
     if(!s || s.matchRecorded || !s.startedAt)return;
     const at=now(),entries=await readLog(),window=entries.filter(e=>e.at>=s.startedAt && e.at<=at),stats=logStats(window);
-    const history=(s.history??[]).map(p=>({at:p.at,gameSeconds:p.gameSeconds,credits:p.credits,freeCredits:p.freeCredits,decisions:p.decisions}));
+    const history=(s.history??[]).map(({at,gameSeconds,credits,freeCredits,decisions,ownUnits,ownBuildings,enemyUnits,enemyBuildings,ownBuilt,ownLost,enemyDestroyed})=>({at,gameSeconds,credits,freeCredits,decisions,ownUnits,ownBuildings,enemyUnits,enemyBuildings,ownBuilt,ownLost,enemyDestroyed}));
+    const ledger=s.observation?.ledger??null;
     const credits=history.map(p=>p.credits).filter(Number.isFinite),seconds=history.map(p=>p.gameSeconds).filter(Number.isFinite);
     const settings=await getSettings();
     const record={id:`${s.startedAt}-${tabId}`,startedAt:s.startedAt,endedAt:at,durationMs:at-s.startedAt,gameSeconds:seconds.length?Math.max(0,seconds.at(-1)-seconds[0]):null,
-      firstTick:s.firstTick??null,lastTick:s.lastTick??null,provider:s.provider??'jev',providerName:s.providerName??'Jev',model:s.model??'',objective:settings.objective??'',reason:String(reason??'').slice(0,40),outcome:s.outcome??'',
+      firstTick:s.firstTick??null,lastTick:s.lastTick??null,provider:s.provider??'jev',providerName:s.providerName??'Jev',model:s.model??'',objective:settings.objective??'',reason:String(reason??'').slice(0,40),outcome:s.outcome||(reason==='battle_ended'?'ended':''),ledger,
       decisions:s.decisions??0,requests:s.requests??0,failures:s.failures??0,acceptedActions:s.acceptedActions??0,waits:s.waits??0,inputTokens:s.inputTokens??0,latencyAvg:stats.latency.avg,latencyMax:stats.latency.max,
       credits:{start:credits[0]??null,end:credits.at(-1)??null,max:credits.length?Math.max(...credits):null,min:credits.length?Math.min(...credits):null},armyMax:s.armyMax??null,
       produced:stats.actions.acceptedProduce,actionsByType:stats.actions.byType,skippedReasons:stats.actions.skippedReasons,
@@ -175,7 +176,7 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
       if(!s || s.token!==message.token)return s;
       let next={...s,updatedAt:now()};
       if(e.kind==='observation'){
-        next=recordObservation(next,summarize({...e.state,tick:e.tick,self:{...e.state?.self,credits:e.credits}},now()),now());
+        next=recordObservation(next,summarize({...e.state,tick:e.tick,self:{...e.state?.self,credits:e.credits},ledger:e.ledger},now()),now());
         next.mission=e.mission;next.armyMax=Math.max(s.armyMax??0,next.army??0);
       }
       else {
@@ -226,6 +227,11 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
     if(message.type==='MATCHES_LIST'){const list=await readMatches();return {matches:list.map(({history,...m})=>({...m,samples:history?.length??0})).reverse()};}
     if(message.type==='MATCH_GET'){const m=(await readMatches()).find(m=>m.id===message.id);if(!m)throw new Error('未找到该场战绩。');return m;}
     if(message.type==='MATCHES_CLEAR'){await c.storage.local.remove('matches');return {matches:0};}
+    if(message.type==='MATCH_SET_OUTCOME'){
+      const outcome=['victory','defeat',''].includes(message.outcome)?message.outcome:undefined;if(outcome===undefined)throw new Error('无效的对局结果。');
+      let updated;await serial(stateLocks,'matches',async()=>{const list=await readMatches();updated=list.find(m=>m.id===message.id);if(!updated)return;updated.outcome=outcome;updated.outcomeMarked=!!outcome;await c.storage.local.set({matches:list});});
+      if(!updated)throw new Error('未找到该场战绩。');return updated;
+    }
     if(message.type==='SET_LANGUAGE' || message.type==='SET_OVERLAY'){
       const settings=await getSettings();
       if(message.type==='SET_LANGUAGE')settings.language=message.language==='en'?'en':'zh-CN';

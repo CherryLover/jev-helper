@@ -163,6 +163,27 @@ export function forceReadiness(api, catalog, state, army, tanks, memory) {
   return { ready, reason, threshold, combatUnits, groundVehicles: tanks.length, canBuildVehicles, canBuildAnything, aaProducible, aaNeeded, stalledTicks };
 }
 
+// Both sides' unit and building counts, plus cumulative built / lost / destroyed, observed from the
+// public view: own losses are exact; enemy kills are counted only when a previously seen object is
+// gone from a tile we can still see, so anything that slipped away in fog is not claimed.
+export function updateLedger(api, catalog, memory) {
+  const tick = api.tick(), B = api.ObjectType.Building;
+  const ledger = memory.ledger ??= { seenOwn: new Map(), seenEnemy: new Map(), seeded: false, ownBuilt: 0, ownUnitsLost: 0, ownBuildingsLost: 0, enemyUnitsDestroyed: 0, enemyBuildingsDestroyed: 0 };
+  const own = api.units("self"), enemies = api.units("enemy");
+  const ownIds = new Set();
+  for (const u of own) { ownIds.add(u.id); if (!ledger.seenOwn.has(u.id)) { ledger.seenOwn.set(u.id, { building: u.type === B }); if (ledger.seeded) ledger.ownBuilt++; } }
+  for (const [id, info] of ledger.seenOwn) if (!ownIds.has(id)) { ledger.seenOwn.delete(id); if (info.building) ledger.ownBuildingsLost++; else ledger.ownUnitsLost++; }
+  const enemyIds = new Set();
+  for (const e of enemies) { enemyIds.add(e.id); ledger.seenEnemy.set(e.id, { building: e.type === B, x: e.tile?.rx, y: e.tile?.ry, tick }); }
+  for (const [id, info] of ledger.seenEnemy) if (!enemyIds.has(id)) {
+    if (info.x !== undefined && api.map.visible(info.x, info.y)) { ledger.seenEnemy.delete(id); if (info.building) ledger.enemyBuildingsDestroyed++; else ledger.enemyUnitsDestroyed++; }
+    else if (tick - info.tick > 3000) ledger.seenEnemy.delete(id);
+  }
+  ledger.seeded = true;
+  return { ownUnits: own.filter(u => u.type !== B).length, ownBuildings: own.filter(u => u.type === B).length, enemyUnits: enemies.filter(u => u.type !== B).length, enemyBuildings: enemies.filter(u => u.type === B).length,
+    ownBuilt: ledger.ownBuilt, ownUnitsLost: ledger.ownUnitsLost, ownBuildingsLost: ledger.ownBuildingsLost, enemyUnitsDestroyed: ledger.enemyUnitsDestroyed, enemyBuildingsDestroyed: ledger.enemyBuildingsDestroyed };
+}
+
 export function frontierPoints(api, base, memory) {
   const size = api.map.size();
   const points = [];
@@ -522,6 +543,8 @@ export function candidateGroups(api, catalog, snapshot, memory) {
           y: rallySite.y,
         },
       );
+    const navalDefenders = units.filter(u => u.type !== api.ObjectType.Building && catalog[u.name]?.naval && u.primaryWeapon &&
+      threatening.length && (api.weaponVs ? !!api.weaponVs(u.id, threatening[0].id) : true)).map(u => u.id);
     if (threatening.length)
       tactics(
         "defend_base",
@@ -530,7 +553,7 @@ export function candidateGroups(api, catalog, snapshot, memory) {
           type: "mission",
           mode: "defend",
           label: "保卫基地",
-          ids,
+          ids: [...ids, ...navalDefenders],
           targetId: threatening[0].id,
           x: threatening[0].tile.rx,
           y: threatening[0].tile.ry,
@@ -955,6 +978,11 @@ export function maintainBattle(api, catalog, memory, emit) {
       api.attack([u.id], options[0].id);
       memory.orders.set(u.id, { targetId: options[0].id, tick });
       issued++;
+    } else if (catalog[u.name]?.naval && u.isIdle && (!last || tick - last.tick > 90)) {
+      // Idle ships close on nearby enemies they can hurt instead of waiting to be shot at.
+      const near = enemies.filter(e => canHit(e) && distance(e.tile, u.tile) <= 12 && effectiveness(catalog[u.name], [e], catalog, api) > 0)
+        .sort((a, b) => distance(a.tile, u.tile) - distance(b.tile, u.tile))[0];
+      if (near) { api.attack([u.id], near.id); memory.orders.set(u.id, { targetId: near.id, tick }); issued++; }
     } else if (
       !u.isDeployed &&
       mission?.ids.includes(u.id) &&
@@ -1094,6 +1122,7 @@ export async function attachJevPlayer(api, options = {}) {
             queues: snap.state.queues,
             state: { ...snap.state, strategy: memory.strategy },
             mission: memory.mission?.label,
+            ledger: updateLedger(api, catalog, memory),
           };
         status.observations.push(o);
         if (status.observations.length > 180) status.observations.shift();
@@ -1220,6 +1249,27 @@ export async function attachJevPlayer(api, options = {}) {
           action,
           ...execution,
         });
+      }
+      // Mechanical fallback: with nothing in sight and no known enemy structure, an army must keep
+      // searching. After three declined scouting questions the first frontier is taken anyway.
+      const scoutAnswer = result.answers.scouting;
+      if (scoutAnswer && groups.scouting) {
+        const nothingToFight = snap.state.visibleEnemyCount === 0 && !memory.enemyBuildings.size;
+        memory.scoutDeclines = scoutAnswer.choice === "wait" && nothingToFight ? (memory.scoutDeclines ?? 0) + 1 : 0;
+        if (memory.scoutDeclines >= 3) {
+          const [choice, action] = Object.entries(groups.scouting.actions).find(([k]) => k !== "wait") ?? [];
+          if (action) {
+            const execution = executeCandidate(api, action, catalog);
+            memory.scoutDeclines = 0;
+            if (execution.accepted) {
+              status.accepted++;
+              memory.mission = { ...action, ids: execution.ids ?? action.ids, since: api.tick() };
+              memory.frontiers.set(`${action.x},${action.y}`, api.tick());
+              memory.points = undefined;
+            }
+            emit({ kind: "action", tick: api.tick(), sourceTick: tick, question: "scouting", choice, auto: true, action, ...execution, reason: execution.accepted ? "auto_explore" : execution.reason });
+          }
+        }
       }
     } catch (e) {
       if (/outside a running battle/.test(e.message)) {

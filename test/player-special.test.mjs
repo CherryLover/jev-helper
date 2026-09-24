@@ -41,8 +41,8 @@ const api = {
     tile: (x, y) => x === 18 && y === 10 ? { rx: x, ry: y, bridge: { id: 90, hitPoints: 200, maxHitPoints: 500 }, landType: 7 } : undefined },
 };
 const snapshot = { raw: { units: own, buildings: own.filter((u) => u.type === 2), army: own.filter((u) => u.type === 3 || u.name === 'TANK'), enemies: [enemy], base },
-  // The enemy tank on the bridge is 7 tiles from the yard: an enemy near the base.
-  state: { self: { credits: 10000 }, harvesters: 3, economy: { factories: 1 }, airThreatCount: 0, nearbyEnemyCount: 1 } };
+  // The enemy tank on the bridge is 7 tiles from the yard: the base is under threat.
+  state: { self: { credits: 10000 }, harvesters: 3, economy: { factories: 1 }, airThreatCount: 0, nearbyEnemyCount: 1, baseUnderAttack: true } };
 // The bridge piece is damaged: since 0.6.0 repair is offered only with a reason (damage or a stuck attack).
 const memory = {};
 const groups = {};

@@ -2,6 +2,7 @@ import { isAirSupport } from './werhd-jev-strategy.mjs';
 import { isCapturable } from './werhd-jev-catalog.mjs';
 export const ATTACK_STUCK_TICKS = 2700, CAPTURE_RESENDS = 3, SIEGE_RANGE = 8, BASE_GARRISON_SPARE = 8;
 // Leaving a building once its job is done: no armed enemy within RELEASE_RADIUS for this long.
+export const ENTRY_RESENDS = 3;
 export const RELEASE_RADIUS = 10, RELEASE_TICKS = { siege: 150, forward: 900, base: 2700 }, REENTER_COOLDOWN = 1800;
 // All tactical choices and spatial searches live in the ordinary player script.
 const distance = (a, b) => Math.hypot(a.rx - b.rx, a.ry - b.ry);
@@ -76,7 +77,9 @@ export function specialGroups(api, catalog, snapshot, memory, groups) {
   const garrison = group('garrison', 'Use empty civilian buildings as strongpoints. SIEGE options put infantry into a building within reach of an enemy defense (pillbox, tower) so it is destroyed from cover; clear each defense on its own side of the road instead of pushing past it. Base strongpoints only matter when the base is threatened. Occupants leave automatically once the job is done and no armed enemy is near, so entering does not lose them for the rest of the match. Preserve at least two mobile infantry. Evacuate a severely damaged occupied building before its occupants are lost. Do not repeatedly interrupt infantry already moving to enter.');
   const occupiers = infantry.filter((u) => catalog[u.name]?.occupier && idle(u, memory, tick) && u.id !== memory.scoutId);
   // Base strongpoints tie infantry down at home; offer them only under threat or with plenty to spare.
-  const baseGarrisonWanted = snapshot.state.baseUnderAttack || (snapshot.state.nearbyEnemyCount ?? 0) > 0 || occupiers.length >= BASE_GARRISON_SPARE;
+  // Only a real threat: with automatic training there are nearly always eight idle infantry, and a
+  // spare-infantry rule kept a home house in an enter / leave loop (0.6.0 match: 65 orders, 497 retries).
+  const baseGarrisonWanted = !!snapshot.state.baseUnderAttack;
   // Siege from cover: for each visible enemy defense, the empty civilian building closest to it that
   // is within reach. Every defense gets its own option, so both sides of a road can be taken.
   const assessment = snapshot.state.combatAssessment;
@@ -93,7 +96,9 @@ export function specialGroups(api, catalog, snapshot, memory, groups) {
   const enemyDefenses = enemies.filter((e) => e.type === api.ObjectType.Building && groundWeapon(catalog[e.name]))
     .sort((a, b) => distance(a.tile, center) - distance(b.tile, center)).slice(0, 4);
   const sieged = new Set();
-  for (const defense of enemyDefenses) {
+  // A pillbox our infantry just had to back away from: take it from cover now.
+  const wantedSiege = (id) => tick - (memory.siegeWanted?.get(id) ?? -Infinity) < 1800;
+  for (const defense of [...enemyDefenses].sort((a, b) => Number(wantedSiege(b.id)) - Number(wantedSiege(a.id)))) {
     const range = catalog[defense.name]?.weapon?.range ?? 0;
     const house = houses.filter((h) => !sieged.has(h.id) && distance(h.tile, defense.tile) <= SIEGE_RANGE)
       .sort((a, b) => distance(a.tile, defense.tile) - distance(b.tile, defense.tile))[0];
@@ -103,9 +108,10 @@ export function specialGroups(api, catalog, snapshot, memory, groups) {
     if (crew.length < 2) continue;
     sieged.add(house.id);
     const label = catalog[defense.name]?.label ?? defense.name;
-    garrison(`siege_${house.id}`, `${attacksFailing ? 'PRIORITY ' : ''}SIEGE ${label} #${defense.id} at (${defense.tile.rx},${defense.tile.ry}): garrison ${crew.length} infantry into building #${house.id} at (${house.tile.rx},${house.tile.ry}), ${Math.round(distance(house.tile, defense.tile))} tiles from it (its weapon range ${range}). Garrisoned infantry fire from cover and outlast the defense${attacksFailing ? `; ${deadlocked ? 'the army has not been able to attack for a long time' : 'attacks in the open are failing'}` : ''}.`,
+    const urgent = attacksFailing || wantedSiege(defense.id);
+    garrison(`siege_${house.id}`, `${urgent ? 'PRIORITY ' : ''}SIEGE ${label} #${defense.id} at (${defense.tile.rx},${defense.tile.ry}): garrison ${crew.length} infantry into building #${house.id} at (${house.tile.rx},${house.tile.ry}), ${Math.round(distance(house.tile, defense.tile))} tiles from it (its weapon range ${range}). Garrisoned infantry fire from cover and outlast the defense${urgent ? `; ${wantedSiege(defense.id) ? 'it is outranging our infantry right now' : deadlocked ? 'the army has not been able to attack for a long time' : 'attacks in the open are failing'}` : ''}.`,
       { type: 'special', kind: 'garrison', ids: crew.map((u) => u.id), targetId: house.id,
-        order: { type: api.OrderType.Occupy, target: { objectId: house.id } }, auto: attacksFailing ? 2 : undefined, purpose: 'siege', defenseId: defense.id });
+        order: { type: api.OrderType.Occupy, target: { objectId: house.id } }, auto: urgent ? (wantedSiege(defense.id) ? 1 : 2) : undefined, purpose: 'siege', defenseId: defense.id });
   }
   for (const building of [...civilians, ...buildings].filter((u) => u.garrison).slice(0, 10)) {
     if (own.has(building.id)) {
@@ -398,6 +404,9 @@ export function maintainSpecial(api, memory, emit) {
       task.phase = 'entering'; task.submitted = tick;
       emit({ kind: 'micro', tick, description: `${action.kind}: 姿态确认后进入目标`, targetId: action.targetId, ids: remaining });
     } else if (tick - task.submitted >= 120 && remaining.some(id => own.get(id).isIdle)) {
+      // Crew that keeps standing outside after three re-sends cannot get in: stop trying.
+      if ((task.resends ?? 0) >= ENTRY_RESENDS) return finish('refused');
+      task.resends = (task.resends ?? 0) + 1;
       const idleIds = remaining.filter(id => own.get(id).isIdle);
       const execution = executeSpecial(api, { ...action, ids: idleIds });
       if (!execution.accepted) return finish('rejected');

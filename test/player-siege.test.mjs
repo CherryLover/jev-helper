@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { specialGroups, rememberSpecial, releaseGarrisons, SIEGE_RANGE, RELEASE_TICKS, REENTER_COOLDOWN } from '../src/player/werhd-jev-special.mjs';
+import { specialGroups, rememberSpecial, releaseGarrisons, maintainSpecial, SIEGE_RANGE, RELEASE_TICKS, REENTER_COOLDOWN, ENTRY_RESENDS } from '../src/player/werhd-jev-special.mjs';
 import { collectState, candidateGroups, historyHints, rememberChoice, MIN_ATTACK_UNITS } from '../src/player/werhd-jev-player.mjs';
 
 // From four real matches (0.5.6): a road with a pillbox on each side; infantry only ever entered
@@ -52,12 +52,14 @@ test('when attacks are failing, siege becomes a priority with an automatic fallb
   assert.equal(groups.garrison.actions.siege_600.auto, 2);
 });
 
-test('home strongpoints are offered when the base is threatened or infantry is plentiful', () => {
+test('home strongpoints are offered only while the base is under attack', () => {
+  // 0.6.1: plenty of idle infantry is no reason on its own (automatic training keeps it high, and a
+  // home house ended in an enter / leave loop).
   const plenty=world({ own:[unit(1,'YARD',2,10,10), ...squad(9, 14, 14)], neutral:[house(602,12,12)] });
   let groups={}; specialGroups(plenty.api, catalog, collectState(plenty.api, catalog), plenty.memory, groups);
-  assert.ok(groups.garrison.actions.occupy_602);
+  assert.ok(!groups.garrison?.actions?.occupy_602);
   const threatened=world({ own:[unit(1,'YARD',2,10,10), ...squad(4, 14, 14)], neutral:[house(602,12,12)] });
-  const snapshot=collectState(threatened.api, catalog); snapshot.state.nearbyEnemyCount=2;
+  const snapshot=collectState(threatened.api, catalog); snapshot.state.baseUnderAttack=true;
   groups={}; specialGroups(threatened.api, catalog, snapshot, threatened.memory, groups);
   assert.ok(groups.garrison.actions.occupy_602);
 });
@@ -175,4 +177,29 @@ test('without vehicle production, infantry is the army: no support caps, and pil
   const s2=collectState(tanks.api, catalog); const g2=candidateGroups(tanks.api, catalog, s2, tanks.memory);
   assert.equal(s2.state.infantryRoles.infantryArmy, false);
   assert.ok(!g2.infantry?.actions?.produce_E2, 'three anti-infantry supports already in a tank army');
+});
+
+test('a pillbox our infantry just backed away from gets its siege first, as a priority that runs after one wait', () => {
+  const own=[unit(1,'YARD',2,10,10), ...squad(6)];
+  const w=world({ own, ...road() });
+  w.memory.siegeWanted=new Map([[501, 4990]]);
+  const groups={}; specialGroups(w.api, catalog, collectState(w.api, catalog), w.memory, groups);
+  const g=groups.garrison, keys=Object.keys(g.criteria).filter(k=>k.startsWith('siege_'));
+  assert.equal(keys[0], 'siege_601', 'the pillbox that outranged us comes first');
+  assert.match(g.criteria.siege_601, /^PRIORITY SIEGE Pill Box #501 .*it is outranging our infantry right now/);
+  assert.equal(g.actions.siege_601.auto, 1);
+  assert.equal(g.actions.siege_600.auto, undefined, 'the other pillbox is not urgent');
+});
+
+test('infantry that cannot get into a building stops trying after a few re-sends', () => {
+  const soldiers=[unit(30,'E2',3,20,20), unit(31,'E2',3,21,20)];
+  const target=house(600,24,20);
+  const w=world({ own:[unit(1,'YARD',2,10,10), ...soldiers], neutral:[target] });
+  const events=[];
+  rememberSpecial(w.memory, {type:'special',kind:'garrison',ids:[30,31],targetId:600,order:{type:8,target:{objectId:600}},purpose:'base'}, {accepted:true}, 5000);
+  let t=5000;
+  for (let i=0;i<=ENTRY_RESENDS+1;i++) { t+=130; w.api.tick=()=>t; maintainSpecial(w.api, w.memory, e=>events.push(e)); }
+  assert.equal(w.memory.specialTasks.length, 0);
+  assert.equal(events.at(-1).result, 'refused');
+  assert.equal(events.filter(e=>/重新进入/.test(e.description ?? '')).length, ENTRY_RESENDS);
 });

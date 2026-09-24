@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { attachJevPlayer, collectState, candidateGroups, executeCandidate, forceReadiness, acceptMission, missionGate, respondToThreats, maintainBattle,
-  MISSION_LOCK_TICKS, THREAT_REPLY_TICKS, THREAT_UNITS_PER_PASS, THREAT_CANDIDATES, THREAT_REPORT_TICKS, FALL_BACK_TICKS, MAX_ASSAULTS, MAX_ASSAULTS_WITH_OBJECTIVE, ENGAGE_RADIUS } from '../src/player/werhd-jev-player.mjs';
+  MISSION_LOCK_TICKS, THREAT_REPLY_TICKS, DEFENSE_RUSH_SQUAD, THREAT_UNITS_PER_PASS, THREAT_CANDIDATES, THREAT_REPORT_TICKS, FALL_BACK_TICKS, MAX_ASSAULTS, MAX_ASSAULTS_WITH_OBJECTIVE, ENGAGE_RADIUS } from '../src/player/werhd-jev-player.mjs';
 import { objectiveKeywords, parseObjective, matchesObjective, trackObjective } from '../src/player/werhd-jev-objective.mjs';
 
 // From two 0.5.9 reports (local Laya model): the player set "摧毁五角大楼" as the match objective, but
@@ -13,6 +13,7 @@ const catalog = {
   YARD:{yard:true,label:'Construction Yard'}, BARRACKS:{factory:'InfantryType',label:'Barracks',cost:500}, FACTORY:{factory:'UnitType',label:'War Factory'},
   GI:{category:'Soldier',cost:200,speed:8,armor:'none',weapon:weapon(4,15,{verses:[1,1,1,1,1,0,0.5]}),label:'Conscript'},
   EGI:{category:'Soldier',armor:'none',weapon:weapon(4,15),label:'GI'},
+  SNIPE:{category:'Soldier',armor:'none',weapon:weapon(6,15),label:'Sniper'},
   TANK:{category:'AFV',cost:700,armor:'heavy',weapon:weapon(6,60),label:'Rhino Tank'},
   PENTAGON:{label:'Pentagon',armor:'concrete'}, POWER:{power:200,label:'Power Plant',armor:'concrete'},
   EBARR:{factory:'InfantryType',label:'Allied Barracks',armor:'concrete'}, EREF:{refinery:true,label:'Ore Refinery',armor:'concrete'},
@@ -32,7 +33,8 @@ function world({ own, enemies = [], neutral = [], credits = 25000, tick = 3000, 
     map:{size:()=>({width:100,height:100}),visible:(x,y)=>visible(x,y),tile:(x,y)=>({rx:x,ry:y,landType:0})}, canPlace:()=>true,
     production:{queues:()=>Array.from({length:6},(_,type)=>({type,size:queues.filter(q=>q.type===type).length,maxSize:99,items:queues.filter(q=>q.type===type)})),
       available:q=>q===undefined?Object.values(offers).flat():(offers[q]??[])},
-    weaponVs:()=>undefined, inRange:()=>false, attack:(...a)=>calls.push(['attack',...a]), move:(...a)=>calls.push(['move',...a]), attackMove:(...a)=>calls.push(['attackMove',...a]), deploy:()=>true,
+    weaponVs:()=>undefined, inRange:()=>false, // Like the game: a unit given an order is no longer idle.
+    attack:(...a)=>{calls.push(['attack',...a]);for(const u of own)if(a[0].includes(u.id))u.isIdle=false;}, move:(...a)=>calls.push(['move',...a]), attackMove:(...a)=>{calls.push(['attackMove',...a]);for(const u of own)if(a[0].includes(u.id))u.isIdle=false;}, deploy:()=>true,
     order:(ids,o)=>{calls.push(['order',ids,o]);return true;}, produce:(...a)=>calls.push(['produce',...a]), gather(){}, repair(){},
     onTick:h=>{api._tick=h;}, offTick(){},
   };
@@ -209,31 +211,36 @@ test('in the decision loop, alternating attack targets only executes the first o
 });
 
 test('a unit shot from beyond its reach closes in with its neighbours, or falls back when it cannot hurt the shooter', () => {
+  // Two conscripts (range 4) under a pillbox (range 5.5): charging only feeds it (0.6.0 match), so
+  // they step out of reach and the pillbox is marked for a siege from cover.
   const pill = unit(920,'PILL',2,55,50);
   const conscript = unit(30,'GI',3,50,50,{isIdle:false}), buddy = unit(31,'GI',3,47,50,{isIdle:false});
   const w = world({ own:[...home(), conscript, buddy], enemies:[pill, unit(700,'EGI',3,46,53)] });
   w.memory.orders = new Map([[30, { tick:2990, targetId:700 }]]);
   const events = [];
   respondToThreats(w.api, catalog, w.memory, e => events.push(e), [conscript, buddy], w.enemies);
-  assert.deepEqual(w.calls, [['attack', [30, 31], 920]], 'the conscript (range 4) and its neighbour go for the pillbox (range 5.5) 5 tiles away');
-  assert.match(events[0].description, /^射程外受击：2 个单位抵近还击 Pill Box #920$/);
+  assert.deepEqual(w.calls.map(c => c[0]), ['move'], 'no charge at the pillbox with two soldiers');
+  assert.ok(w.memory.siegeWanted.has(920), 'the pillbox is marked for a siege');
+  assert.match(events[0].description, /^射程外受击：#30 避开 Pill Box #920，后撤到/);
   w.setTick(3000 + THREAT_REPLY_TICKS - 1);
   respondToThreats(w.api, catalog, w.memory, e => events.push(e), [conscript, buddy], w.enemies);
   assert.equal(w.calls.length, 1, 'no new order during the cooldown');
-  w.setTick(3000 + THREAT_REPLY_TICKS);
-  respondToThreats(w.api, catalog, w.memory, e => events.push(e), [conscript, buddy], w.enemies);
-  assert.equal(w.calls.length, 2, 'after the cooldown it may answer again');
+  // A crowd of eight or more rushes it and wins by numbers.
+  const crowd = Array.from({ length:DEFENSE_RUSH_SQUAD }, (_, i) => unit(60 + i,'GI',3,50,48 + i * 0.5,{isIdle:false}));
+  const c = world({ own:[...home(), ...crowd], enemies:[unit(920,'PILL',2,55,50)] });
+  respondToThreats(c.api, catalog, c.memory, e => events.push(e), crowd, c.enemies);
+  assert.equal(c.calls[0][0], 'attack'); assert.equal(c.calls[0][2], 920); assert.ok(c.calls[0][1].length >= DEFENSE_RUSH_SQUAD);
   // A conscript cannot hurt a tank: it steps out of the tank's range instead.
   const lone = unit(40,'GI',3,20,30), tank = unit(701,'TANK',7,25,30);
   const t = world({ own:[...home(), lone], enemies:[tank] });
   respondToThreats(t.api, catalog, t.memory, e => events.push(e), [lone], [tank]);
   assert.deepEqual(t.calls, [['move', [40], 16, 30]], 'back to 9 tiles from a range-6 tank');
-  assert.match(events.at(-1).description, /#40 打不动 Rhino Tank #701，后撤到 \(16,30\)/);
-  // Wired into the regular micro loop.
-  const m = world({ own:[...home(), unit(30,'GI',3,50,50,{isIdle:false})], enemies:[unit(920,'PILL',2,55,50)] });
+  assert.match(events.at(-1).description, /#40 避开 Rhino Tank #701，后撤到 \(16,30\)/);
+  // Wired into the regular micro loop: an enemy soldier that outranges ours is still fought.
+  const m = world({ own:[...home(), unit(30,'GI',3,50,50,{isIdle:false})], enemies:[unit(700,'SNIPE',3,55,50)] });
   const micro = [];
   maintainBattle(m.api, catalog, m.memory, e => micro.push(e));
-  assert.ok(m.calls.some(c => c[0] === 'attack' && c[2] === 920)); assert.ok(micro.some(e => e.reply === 'close_in'));
+  assert.ok(m.calls.some(c => c[0] === 'attack' && c[2] === 700)); assert.ok(micro.some(e => e.reply === 'close_in'));
 });
 
 test('engage_visible only offers enemies near the troops and says where they are', () => {
@@ -376,7 +383,7 @@ test('threat replies: bounded work in a big battle, one report per pass, no walk
   respondToThreats(w.api, catalog, w.memory, e => events.push(e), own, enemies);
   assert.ok(queries <= THREAT_UNITS_PER_PASS * THREAT_CANDIDATES * 3, `${queries} range queries in one pass`);
   assert.equal(events.length, 1, 'all replies of a pass are one report');
-  assert.ok(events[0].replies >= 2); assert.match(events[0].description, /^射程外受击：.*抵近还击.*；/);
+  assert.ok(events[0].replies >= 2); assert.match(events[0].description, /^射程外受击：.*；/);
   const cursor = w.memory.threatCursor;
   assert.ok(cursor >= THREAT_UNITS_PER_PASS, 'at most a batch of units is examined per pass');
   w.setTick(3000 + THREAT_REPLY_TICKS);
@@ -410,4 +417,28 @@ test('objective clauses: "并 / 同时 / 但 / 不要 / but do not" protect what
   const w = world({ own:[...home(), ...squad(12)], enemies:enemyBase(), neutral:[unit(996,'WHITE',2,20,20)] });
   w.memory.objective = '摧毁五角大楼但不要打白宫';
   assert.equal(trackObjective(w.api, catalog, w.memory, { rx:10, ry:10 }).id, 990);
+});
+
+test('repeating the current attack reaches only new or idle units; soldiers already fighting keep their target', async () => {
+  const army = squad(12);
+  const w = world({ own:[...home(), ...army], enemies:[unit(801,'EBARR',2,62,60)], offers:{} });
+  const player = await attachJevPlayer(w.api, { catalog, intervalMs:1e9, wakeIntervalMs:0, disableMicro:true, maxDecisions:50,
+    requestDecision:async body => ({ answers:Object.fromEntries(Object.keys(body.groups).map(id => [id, { choice:id === 'tactics' ? 'assault_801' : 'wait', confidence:1 }])) }) });
+  try {
+    await new Promise(r => setTimeout(r, 5));
+    const first = w.calls.filter(c => c[0] === 'attack');
+    assert.equal(first.length, 1); const ordered = first[0][1];
+    assert.ok(ordered.length >= 10, 'the army (minus its scout) is sent');
+    // A fresh conscript joins, one soldier has gone idle, the rest are busy answering fire.
+    const idle = army.find(u => ordered.includes(u.id));
+    w.own.push(unit(99,'GI',3,50,50)); idle.isIdle = true;
+    w.setTick(3200); w.api._tick({}); await new Promise(r => setTimeout(r, 5));
+    const second = w.calls.filter(c => c[0] === 'attack').at(-1);
+    assert.deepEqual([...second[1]].sort((a,b)=>a-b), [idle.id, 99].sort((a,b)=>a-b), 'only the idle soldier and the newcomer are ordered');
+    assert.equal(player.memory.mission.ids.length, ordered.length + 1, 'the mission still counts the whole army');
+    // Nobody new and nobody idle: nothing is re-sent, however long ago the last order was.
+    w.setTick(3250); w.api._tick({}); await new Promise(r => setTimeout(r, 5));
+    w.setTick(4000); w.api._tick({}); await new Promise(r => setTimeout(r, 5));
+    assert.equal(w.calls.filter(c => c[0] === 'attack').length, 2);
+  } finally { player.stop('manual'); }
 });

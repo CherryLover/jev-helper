@@ -926,7 +926,10 @@ export function acceptMission(memory, action, execution, tick) {
     return memory.mission;
   }
   const keep = old && old.mode === action.mode && sameTarget(old, action);
-  memory.mission = { ...action, ids, since: keep ? old.since : tick, issuedAt: tick };
+  // A repeat that only reached new or idle units keeps the units already on the mission.
+  const all = keep && action.merge ? [...new Set([...action.merge, ...ids])] : ids;
+  const { merge, ...rest } = action;
+  memory.mission = { ...rest, ids: all, since: keep ? old.since : tick, issuedAt: tick };
   // Re-issuing the same target never extends the lock.
   if (action.mode === "attack" && !sameTarget(memory.missionLock, action))
     memory.missionLock = { targetId: action.targetId, x: action.x, y: action.y, tick, objective: !!action.objective };
@@ -1115,7 +1118,7 @@ export function findVisibleOre(api, origin) {
 // pillbox, range 5.5, kept firing at something else). Each one now either closes in on the shooter,
 // with nearby comrades, when it can hurt it, or steps out of its range when it cannot.
 export const THREAT_REPLY_TICKS = 60, THREAT_SQUAD_RADIUS = 6, THREAT_UNITS_PER_PASS = 32, THREAT_CANDIDATES = 6,
-  THREAT_REPORT_TICKS = 150, FALL_BACK_TICKS = 450;
+  THREAT_REPORT_TICKS = 150, FALL_BACK_TICKS = 450, DEFENSE_RUSH_SQUAD = 8, SIEGE_WANTED_TICKS = 1800;
 export function respondToThreats(api, catalog, memory, emit, mobile, enemies, skip = new Set()) {
   const tick = api.tick(), Air = api.ZoneType?.Air ?? 1;
   memory.threatReplies ??= new Map(); memory.lastHealth ??= new Map(); memory.orders ??= new Map(); memory.fallBack ??= new Map();
@@ -1151,9 +1154,13 @@ export function respondToThreats(api, catalog, memory, emit, mobile, enemies, sk
     const shooter = (outranged.length ? outranged : hurt ? closest.filter((g) => g.d <= g.reach + 1.5 && hurts(g.e, u)) : [])[0];
     if (!shooter) continue;
     const e = shooter.e;
-    if (hurts(u, e)) {
-      const squad = [u, ...mobile.filter((o) => o !== u && !handled.has(o.id) && !skip.has(o.id) && !o.isDeployed && !cooling(o) &&
-        distance(o.tile, u.tile) <= THREAT_SQUAD_RADIUS && distance(o.tile, e.tile) > ownReach(o) && hurts(o, e))];
+    const squad = hurts(u, e) ? [u, ...mobile.filter((o) => o !== u && !handled.has(o.id) && !skip.has(o.id) && !o.isDeployed && !cooling(o) &&
+      distance(o.tile, u.tile) <= THREAT_SQUAD_RADIUS && distance(o.tile, e.tile) > ownReach(o) && hurts(o, e))] : [];
+    // A few soldiers charging a pillbox that outranges them only feed it (0.6.0 match). A fixed
+    // defense is rushed only by a crowd; otherwise step out of reach and ask for a siege from cover.
+    const fixedDefense = e.type === api.ObjectType.Building;
+    if (fixedDefense && squad.length) (memory.siegeWanted ??= new Map()).set(e.id, tick);
+    if (squad.length && (!fixedDefense || squad.length >= DEFENSE_RUSH_SQUAD)) {
       const ids = squad.map((o) => o.id);
       api.attack(ids, e.id);
       for (const id of ids) { handled.add(id); memory.threatReplies.set(id, tick); memory.orders.set(id, { tick, targetId: e.id, threatReply: true }); }
@@ -1174,7 +1181,7 @@ export function respondToThreats(api, catalog, memory, emit, mobile, enemies, sk
   // keeps its other entries.
   if (replies.length && tick - (memory.lastThreatReport ?? -Infinity) >= THREAT_REPORT_TICKS) {
     memory.lastThreatReport = tick;
-    const text = (r) => r.reply === "close_in" ? `${r.ids.length} 个单位抵近还击 ${r.name} #${r.targetId}` : `#${r.ids[0]} 打不动 ${r.name} #${r.targetId}，后撤到 (${r.target.x},${r.target.y})`;
+    const text = (r) => r.reply === "close_in" ? `${r.ids.length} 个单位抵近还击 ${r.name} #${r.targetId}` : `#${r.ids[0]} 避开 ${r.name} #${r.targetId}，后撤到 (${r.target.x},${r.target.y})`;
     emit({ kind: "micro", tick, description: `射程外受击：${replies.slice(0, 3).map(text).join("；")}${replies.length > 3 ? `；另 ${replies.length - 3} 起` : ""}`,
       replies: replies.length, ids: replies.flatMap((r) => r.ids), reply: replies[0].reply, targetId: replies[0].targetId });
   }
@@ -1182,6 +1189,7 @@ export function respondToThreats(api, catalog, memory, emit, mobile, enemies, sk
   for (const id of memory.lastHealth.keys()) if (!living.has(id)) memory.lastHealth.delete(id);
   for (const [id, t] of memory.threatReplies) if (!living.has(id) || tick - t > THREAT_REPLY_TICKS * 10) memory.threatReplies.delete(id);
   for (const [id, f] of memory.fallBack) if (!living.has(id) || tick - f.tick > FALL_BACK_TICKS) memory.fallBack.delete(id);
+  for (const [id, t] of memory.siegeWanted ?? []) if (tick - t > SIEGE_WANTED_TICKS) memory.siegeWanted.delete(id);
   return handled;
 }
 
@@ -1566,14 +1574,18 @@ export async function attachJevPlayer(api, options = {}) {
         }
         if (action?.type === "mission") {
           const old = memory.mission;
-          if (
-            old &&
-            old.mode === action.mode &&
-            old.targetId === action.targetId &&
-            old.ids.length === action.ids.length && action.ids.every(id=>old.ids.includes(id)) &&
-            Math.hypot(old.x - action.x, old.y - action.y) < 5 &&
-            api.tick() - (old.issuedAt ?? old.since) < 180
-          ) {
+          const sameMission = old && old.mode === action.mode && old.targetId === action.targetId && Math.hypot(old.x - action.x, old.y - action.y) < 5;
+          // Repeating the current mission only reaches units that are new to it or standing idle.
+          // Everyone else may be answering fire; re-ordering the whole army every turn pulled them
+          // off the enemies shooting at them (0.6.0 match: 92 lost in three minutes).
+          let nothingNew = false;
+          if (sameMission && action.mode !== "defend") {
+            const selfNow = new Map(api.units("self").map((u) => [u.id, u]));
+            const fresh = action.ids.filter((uid) => !old.ids.includes(uid) || selfNow.get(uid)?.isIdle);
+            if (!fresh.length) nothingNew = true;
+            else if (fresh.length < action.ids.length) action = { ...action, ids: fresh, merge: old.ids };
+          }
+          if (nothingNew || (sameMission && action.ids.every(id=>old.ids.includes(id)) && api.tick() - (old.issuedAt ?? old.since) < 180)) {
             emit({
               kind: "action",
               tick: api.tick(),

@@ -50,7 +50,7 @@ test('inline validation reports every invalid field at once and maps background 
   assert.deepEqual(fieldErrors({provider:'jev',apiBase:' https://api.typesafe.ai/v1 ',model:'jev-latest',hotkey:'Alt+Shift+J',maxDecisions:2000,apiKey:''},{requireKey:false}),{});
   assert.deepEqual(fieldErrors({provider:'local',localBase:'http://127.0.0.1:8742/v1',localModel:'laya',hotkey:'Alt+Shift+J',maxDecisions:10,localKey:''},{requireKey:true}),{});
   assert.equal(errorField('请先填写并保存 JEV 密钥。'),'apiKey');assert.equal(errorField('更换 API 服务时，请重新输入该服务的密钥。'),'apiKey');
-  assert.equal(errorField('请输入有效的 API 地址。'),'apiBase');assert.equal(errorField('请在插件中保存设置，授权访问所填 API 地址。','local'),'localBase');
+  assert.equal(errorField('请输入有效的 API 地址。'),'apiBase');assert.equal(errorField('尚未授权访问模型服务地址，请在插件中点击「授权访问」。','local'),'','authorization is not a field error');assert.equal(errorField('API 访问权限已被撤销，请重新保存设置。'),'');assert.equal(errorField('请输入有效的 API 地址。','local'),'localBase');
   assert.equal(fieldErrors({provider:'jev',apiBase:'https://api.typesafe.ai/v1',model:'m',hotkey:'Alt+J',maxDecisions:1,apiKey:'k',objective:'o'.repeat(301)}).objective,'本局目标最多 300 个字符。');assert.equal(errorField('本局目标最多 300 个字符。'),'objective');
   assert.equal(errorField('模型名称无效。','local'),'localModel');assert.equal(errorField('每局决策上限应为 1–10000。'),'maxDecisions');assert.equal(errorField('托管未能启动。'),'');
 });

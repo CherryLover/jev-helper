@@ -8,8 +8,9 @@ let observation={at:now,tick:5400,gameSeconds:360,credits:8450,freeCredits:5250,
 const history=Array.from({length:40},(_,i)=>({at:now-(39-i)*5000,gameSeconds:160+i*5,credits:10000-i*60+Math.sin(i*.6)*900,freeCredits:Math.max(0,7000-i*70+Math.sin(i*.6)*900),decisions:Math.floor(i/3),ownUnits:6+Math.floor(i/2),ownBuildings:5+Math.floor(i/8),enemyUnits:Math.max(0,Math.round(4+Math.sin(i/3)*4)),ownBuilt:Math.floor(i/2),ownLost:Math.floor(i/6),enemyDestroyed:Math.floor(i/3)}));
 let status={supported:true,running:true,title:'界面预览 · 模拟对局 / UI fixture',decisions:13,credits:8450,latencyMs:287,lastTick:5400,mission:'模拟显示：派遣主力拦截基地附近的敌人',events:[{at:now,kind:'action',actionType:'produce',choice:'produce_MTNK',accepted:true,text:'生产灰熊坦克'}],observation,history,liveObservation:true,acceptedActions:31,waits:8};
 if(new URL(location.href).searchParams.has('empty'))status={supported:true,running:false,title:'UI fixture · Lobby',events:[]};
-window.chrome={permissions:{request:async()=>true},tabs:{query:async()=>[{id:1}]},runtime:{sendMessage:async m=>{
- if(m.type==='GET_SETTINGS')return {ok:true,value:settings};
+const deny=new URL(location.href).searchParams.has('deny');let granted=!deny;
+window.chrome={permissions:{request:async()=>{if(deny&&!window.__grantNext)return false;granted=true;return true;}},tabs:{query:async()=>[{id:1}]},runtime:{sendMessage:async m=>{
+ if(m.type==='GET_SETTINGS')return {ok:true,value:{...settings,permitted:granted,origin:settings.provider==='local'?'http://127.0.0.1/*':'https://api.typesafe.ai/*'}};
  if(m.type==='SET_LANGUAGE'){settings.language=m.language;localStorage.previewLanguage=m.language;return {ok:true,value:{language:m.language}};}
  if(m.type==='SET_OVERLAY'){settings.showOverlay=m.showOverlay;return {ok:true,value:{showOverlay:m.showOverlay}};}
  if(m.type==='TEST_CONNECTION'){await new Promise(r=>setTimeout(r,1200));if(location.search.includes('testfail'))return {ok:false,error:settings.providerName+' 连接失败，请检查地址、网络或响应格式。'};return {ok:true,value:{latencyMs:settings.provider==='local'?9:123,providerName:settings.providerName,model:settings.provider==='local'?'laya-multilingual-mlx':'jev-1.13'}};}
@@ -22,7 +23,7 @@ window.chrome={permissions:{request:async()=>true},tabs:{query:async()=>[{id:1}]
  if(m.type==='MATCHES_CLEAR')return {ok:true,value:{matches:0}};
  if(m.type==='MATCH_SET_OUTCOME'){const t=m.id==='b'?matchB:matchA;t.outcome=m.outcome;t.outcomeMarked=!!m.outcome;return {ok:true,value:t};}
  if(m.type==='GET_STATUS'){if(status.observation)status.observation.at=Date.now();return {ok:true,value:status};}
- if(m.type==='SAVE_SETTINGS'){const {apiKey,localKey,...rest}=m.settings;settings={...rest,apiKey,localKey,hasKey:!!apiKey,hasLocalKey:!!localKey,providerName:rest.provider==='local'?'Laya':'Jev'};localStorage.previewProvider=rest.provider;status.providerName=settings.providerName;return {ok:true,value:settings};}
+ if(m.type==='SAVE_SETTINGS'){const {apiKey,localKey,...rest}=m.settings;settings={...rest,apiKey,localKey,hasKey:!!apiKey,hasLocalKey:!!localKey,providerName:rest.provider==='local'?'Laya':'Jev'};localStorage.previewProvider=rest.provider;status.providerName=settings.providerName;return {ok:true,value:{...settings,permitted:granted,origin:settings.provider==='local'?'http://127.0.0.1/*':'https://api.typesafe.ai/*'}};}
  if(m.type==='CLEAR_KEY'){if(m.provider==='local'){settings.hasLocalKey=false;settings.localKey='';}else{settings.hasKey=false;settings.apiKey='';}status.running=false;return {ok:true,value:{}};}
  if(m.type==='START'){status.running=true;return {ok:true,value:status};}
  if(m.type==='STOP'){status.running=false;status.reason='manual';return {ok:true,value:status};}

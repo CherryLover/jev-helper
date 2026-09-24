@@ -76,7 +76,8 @@ export function fieldErrors(input, {requireKey = false} = {}) {
 export function errorField(message, provider = 'jev') {
   const local = provider === 'local';
   if (/JEV 密钥|更换 API 服务|密钥格式/.test(message)) return 'apiKey';
-  if (/API 地址|API 访问/.test(message)) return local ? 'localBase' : 'apiBase';
+  if (/授权|访问权限/.test(message)) return '';
+  if (/API 地址/.test(message)) return local ? 'localBase' : 'apiBase';
   if (/模型名称/.test(message)) return local ? 'localModel' : 'model';
   if (/快捷键/.test(message)) return 'hotkey';
   if (/决策上限/.test(message)) return 'maxDecisions';

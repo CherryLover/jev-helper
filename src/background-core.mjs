@@ -45,6 +45,10 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
   }
   const getSession = async tabId => (await c.storage.session.get(key(tabId)))[key(tabId)];
   const getSettings = async () => ({...DEFAULTS,...(await c.storage.local.get('settings')).settings});
+  // Whether the browser has granted access to the selected model service. Settings save without it;
+  // starting or testing needs it, and the popup offers a one-click authorization.
+  const permission = async config => {const origin=originPattern(activeProvider(config).apiBase);return {origin,permitted:await c.permissions.contains({origins:[origin]})};};
+  const settingsView = async config => ({...privateSettings(config),...await permission(config)});
   const contentConfig = s => ({hotkey:s.hotkey,language:s.language,showOverlay:s.showOverlay,providerName:activeProvider(s).name});
   const notifyOverlay = async s => {
     if(s?.documentId)await c.tabs.sendMessage(s.tabId,{type:'OVERLAY_CHANGED',running:s.running},{documentId:s.documentId}).catch(()=>{});
@@ -99,7 +103,7 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
     if(!supportedGame(tab.url))throw new Error('请先切换到王二火大的游戏标签页。');
     const config=validateSettings(await getSettings()),provider=activeProvider(config);
     if(provider.requiresKey && !provider.apiKey)throw new Error('请先填写并保存 JEV 密钥。');
-    if(!await c.permissions.contains({origins:[originPattern(provider.apiBase)]}))throw new Error('请在插件中保存设置，授权访问所填 API 地址。');
+    if(!await c.permissions.contains({origins:[originPattern(provider.apiBase)]}))throw new Error('尚未授权访问模型服务地址，请在插件中点击「授权访问」。');
     const old=await getSession(tabId);
     if(old?.running) {
       const live=await pageCall(tabId,'status',null,old.documentId).catch(()=>null);
@@ -216,7 +220,7 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
       return serial(controlLocks,sender.tab.id,async()=> (await getSession(sender.tab.id))?.running?stop(sender.tab.id):start(sender.tab.id));
     }
     if(!trustExtension(sender))throw new Error('此操作只允许在插件窗口中执行。');
-    if(message.type==='GET_SETTINGS')return privateSettings(await getSettings());
+    if(message.type==='GET_SETTINGS')return settingsView(await getSettings());
     if(message.type==='LOG_STATS'){const entries=await readLog();return {stats:logStats(entries),chars:JSON.stringify(entries).length};}
     if(message.type==='LOG_EXPORT'){
       const entries=await readLog();
@@ -249,14 +253,14 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
         const config=validateSettings(await getSettings()),provider=activeProvider(config);
         name=provider.name;
         if(provider.requiresKey && !provider.apiKey)throw new Error('请先填写并保存 JEV 密钥。');
-        if(!await c.permissions.contains({origins:[originPattern(provider.apiBase)]}))throw new Error('请先保存设置并授权 API 访问。');
+        if(!await c.permissions.contains({origins:[originPattern(provider.apiBase)]}))throw new Error('尚未授权访问模型服务地址，请在插件中点击「授权访问」。');
         const questions={connection:{type:'choice',instructions:'Connection check only. Select ok. No game actions will be executed.',criteria:{ok:'Connection accepted'}}};
         const response=await fetchImpl(apiEndpoint(provider.apiBase),{method:'POST',headers:authHeaders(provider),body:JSON.stringify({model:provider.model,state:{purpose:'extension_connection_check'},questions}),signal:abort.signal,redirect:'error',credentials:'omit',referrerPolicy:'no-referrer'});
         if(!response.ok)throw new Error(httpError(response.status,name));
         const raw=await response.text();if(raw.length>256000)throw new Error(`${name} 响应过大。`);
         const result=validateAnswer(JSON.parse(raw),questions,name);
         return {latencyMs:now()-started,provider:provider.id,providerName:name,model:result.model};
-      }catch(e){throw new Error(e.name==='AbortError'?`${name} 连接测试超时。`:new RegExp(`^(${name}|请先)`).test(e.message)?e.message:`${name} 连接失败，请检查地址、网络或响应格式。`);}
+      }catch(e){throw new Error(e.name==='AbortError'?`${name} 连接测试超时。`:new RegExp(`^(${name}|请先|尚未)`).test(e.message)?e.message:`${name} 连接失败，请检查地址、网络或响应格式。`);}
       finally{probing=false;clearTimeout(timer);}
     }
     if(message.type==='SAVE_SETTINGS'){
@@ -267,11 +271,10 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
       if(input.apiBase && new URL(apiEndpoint(input.apiBase)).origin!==new URL(apiEndpoint(prior.apiBase)).origin && (!apiKey || apiKey===prior.apiKey))throw new Error('更换 API 服务时，请重新输入该服务的密钥。');
       const config=validateSettings({...input,apiKey,localKey},prior);
       const before=activeProvider(prior),after=activeProvider(config);
-      if(!await c.permissions.contains({origins:[originPattern(after.apiBase)]}))throw new Error('API 访问权限未获授权。');
       if(before.id!==after.id || after.apiKey!==before.apiKey || after.apiBase!==before.apiBase || after.model!==before.model){for(const s of Object.values(await c.storage.session.get(null)))if(s?.running)await stop(s.tabId,'settings_changed');}
       await c.storage.local.set({settings:config});
       await broadcastConfig(config);
-      return privateSettings(config);
+      return settingsView(config);
     }
     if(message.type==='CLEAR_KEY'){
       const field=message.provider==='local'?'localKey':'apiKey';

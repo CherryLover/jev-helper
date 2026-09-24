@@ -246,3 +246,16 @@ test('a match that ended undefeated is labelled ended, and the popup can mark vi
   assert.equal((await x.app.handle({type:'MATCHES_LIST'},extension)).matches[0].outcome,'victory');
   const cleared=await x.app.handle({type:'MATCH_SET_OUTCOME',id:matches[0].id,outcome:''},extension);assert.equal(cleared.outcomeMarked,false);
 });
+
+test('settings save without site access; starting and testing then ask for authorization instead of re-entry',async()=>{
+  const x=mockChrome({local:{settings:{...DEFAULTS}},session:{}});
+  let granted=false;x.c.permissions.contains=async()=>granted;
+  const app=createBackground(x.c,{fetchImpl:async()=>answer()});
+  const saved=await app.handle({type:'SAVE_SETTINGS',settings:{provider:'local',localBase:'http://10.0.25.215:8742/v1',localKey:'lan-token'}},extension);
+  assert.equal(saved.permitted,false);assert.equal(saved.origin,'http://10.0.25.215/*');assert.equal(x.data.local.settings.localKey,'lan-token','the typed token is stored even before access is granted');
+  await assert.rejects(app.handle({type:'START',tabId:7},extension),/授权访问/);
+  await assert.rejects(app.handle({type:'TEST_CONNECTION'},extension),/授权访问/);
+  granted=true;
+  const view=await app.handle({type:'GET_SETTINGS'},extension);assert.equal(view.permitted,true);assert.equal(view.localKey,'lan-token');
+  await app.handle({type:'START',tabId:7},extension);assert.equal((await app.getSession(7)).running,true);
+});

@@ -30,6 +30,7 @@ function showFieldErrors(errors){
 function reportError(message){
  const field=errorField(message,selectedProvider());
  if(field&&fieldError(field,message)){$(FIELD_IDS[field]).focus();return true;}
+ if(/授权|访问权限/.test(message)&&config.permitted===false){renderPermission();$('authorize').focus();notice(message);return true;}
  notice(message);return false;
 }
 let logStatsCache,matchList=[],matchSelected,matchDetail;
@@ -87,6 +88,14 @@ function downloadJson(name,data){
  const blob=new Blob([JSON.stringify(data,null,1)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');
  a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);
 }
+// Settings are saved before the browser is asked for site access, so a dismissed prompt never
+// costs the user what they typed. The banner offers the grant again with one click.
+function renderPermission(){const banner=$('permission-banner');const need=config.permitted===false;banner.hidden=!need;if(need)$('permission-text').textContent=tr('permissionNeeded',{origin:config.origin});}
+async function authorize(){
+ $('authorize').disabled=true;
+ try{const granted=await chrome.permissions.request({origins:[config.origin]});config=await rpc({type:'GET_SETTINGS'});renderPermission();if(granted&&config.permitted)notify('authorized',true,{origin:config.origin});await refresh();}
+ catch(e){notice(e.message);}finally{$('authorize').disabled=false;}
+}
 function openSettingsPanel(){for(const other of document.querySelectorAll('[data-panel]')){const on=other.dataset.panel==='settings';other.setAttribute('aria-pressed',on);$(`panel-${other.dataset.panel}`).hidden=!on;}activePanel='settings';}
 // The connection probe reports on its own button: testing → ok / fail. Any edit resets it.
 function showTest(state,key,vars){testState={state,key,vars};const btn=$('test-connection');btn.dataset.state=state;btn.disabled=state==='testing';$('test-label').textContent=tr(key??'test',vars);}
@@ -107,6 +116,7 @@ function translate(){
  if(noticeState)notice(noticeState.text,noticeState.success,noticeState.key,noticeState.vars);
  for(const [field,message] of Object.entries(fieldMessages))fieldError(field,message);
  if(logStatsCache)renderLogStats(logStatsCache);
+ renderPermission();
  if(activePanel==='matches'){renderMatchList();if(matchDetail)renderMatchDetail(matchDetail);}
  if(lastStatus)displayStatus(lastStatus);
 }
@@ -216,10 +226,16 @@ $('settings').addEventListener('submit',async e=>{
   const input={language:config.language,provider:selectedProvider(),apiKey:$('api-key').value.trim(),apiBase:$('api-base').value.trim(),model:$('model').value.trim(),localKey:$('local-key').value.trim(),localBase:$('local-base').value.trim(),localModel:$('local-model').value.trim(),hotkey:$('hotkey').value,autoCamera:$('auto-camera').checked,showOverlay:$('show-overlay').checked,maxDecisions:$('budget').value.trim()===''?NaN:Number($('budget').value),objective:$('objective').value};
   clearFieldErrors();if(showFieldErrors(fieldErrors(input,{requireKey:true})))return;
   validateSettings(input);
-  if(!await chrome.permissions.request({origins:[originPattern(input.provider==='local'?input.localBase:input.apiBase)]}))throw new Error('未获得 API 访问授权，设置未保存。');
-  config=await rpc({type:'SAVE_SETTINGS',settings:input});dirty=false;displayConfig();notify('saved',true);await refresh();
+  config=await rpc({type:'SAVE_SETTINGS',settings:input});dirty=false;displayConfig();
+  if(!config.permitted){
+   let granted=false;try{granted=await chrome.permissions.request({origins:[config.origin]});}catch{}
+   config=await rpc({type:'GET_SETTINGS'});
+   if(!granted||!config.permitted){renderPermission();notify('savedUnauthorized',false,{origin:config.origin});await refresh();return;}
+  }
+  renderPermission();notify('saved',true);await refresh();
  }catch(error){reportError(error.message);}
 });
+$('authorize').addEventListener('click',authorize);
 $('clear-key').addEventListener('click',async()=>{try{const provider=selectedProvider();await rpc({type:'CLEAR_KEY',provider});if(provider==='local'){config.hasLocalKey=false;config.localKey='';$('local-key').value='';}else{config.hasKey=false;config.apiKey='';$('api-key').value='';}keyPlaceholder();notify('keyCleared',true);await refresh();}catch(e){notice(e.message);}});
 for(const [id,type]of [['start','START'],['stop','STOP']])$(id).addEventListener('click',async()=>{
  $(id).disabled=true;notice('');try{await rpc({type,tabId});await refresh();}catch(e){if(reportError(e.message))openSettingsPanel();$(id).disabled=false;}

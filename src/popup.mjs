@@ -1,4 +1,4 @@
-import {DEFAULTS,validateSettings,originPattern,hotkeyFromEvent} from './shared.mjs';
+import {DEFAULTS,validateSettings,originPattern,hotkeyFromEvent,fieldErrors,errorField} from './shared.mjs';
 import {importSettings} from './import-settings.mjs';
 import {t,errorText,messages,officialWebsiteUrl} from './i18n.mjs';
 import {drawChart,drawPositions} from './charts.mjs';
@@ -7,6 +7,32 @@ let tabId,config={...DEFAULTS,hasKey:false},lastStatus,dirty=false,refreshing=fa
 const tr=(key,vars)=>t(config.language,key,vars);
 const providerName=()=>config.providerName||'Jev';
 let testState={state:'idle'};
+// Inline field errors (Material style): red outline plus a message under the input.
+const FIELD_IDS={apiKey:'api-key',apiBase:'api-base',model:'model',localKey:'local-key',localBase:'local-base',localModel:'local-model',hotkey:'hotkey',maxDecisions:'budget'};
+const fieldMessages={};
+function fieldError(field,message){
+ const id=FIELD_IDS[field];if(!id)return false;const input=$(id),slot=$(`err-${id}`);
+ fieldMessages[field]=message;slot.textContent=errorText(config.language,message);slot.hidden=false;
+ input.classList.add('invalid');input.setAttribute('aria-invalid','true');input.setAttribute('aria-errormessage',slot.id);
+ if(input.closest('details'))input.closest('details').open=true;
+ return true;
+}
+function clearFieldError(field){
+ const id=FIELD_IDS[field];if(!id)return;delete fieldMessages[field];const input=$(id),slot=$(`err-${id}`);
+ slot.hidden=true;slot.textContent='';input.classList.remove('invalid');input.removeAttribute('aria-invalid');input.removeAttribute('aria-errormessage');
+}
+const clearFieldErrors=()=>{for(const field of Object.keys(FIELD_IDS))clearFieldError(field);};
+function showFieldErrors(errors){
+ let first;for(const field of Object.keys(FIELD_IDS)){if(field in errors&&fieldError(field,errors[field]))first??=FIELD_IDS[field];}
+ if(first)$(first).focus();return !!first;
+}
+// A background error that belongs to a field is shown there; anything else goes to the notice.
+function reportError(message){
+ const field=errorField(message,selectedProvider());
+ if(field&&fieldError(field,message)){$(FIELD_IDS[field]).focus();return true;}
+ notice(message);return false;
+}
+function openSettingsPanel(){for(const other of document.querySelectorAll('[data-panel]')){const on=other.dataset.panel==='settings';other.setAttribute('aria-pressed',on);$(`panel-${other.dataset.panel}`).hidden=!on;}activePanel='settings';}
 // The connection probe reports on its own button: testing → ok / fail. Any edit resets it.
 function showTest(state,key,vars){testState={state,key,vars};const btn=$('test-connection');btn.dataset.state=state;btn.disabled=state==='testing';$('test-label').textContent=tr(key??'test',vars);}
 const selectedProvider=()=>$('provider-local').getAttribute('aria-checked')==='true'?'local':'jev';
@@ -24,6 +50,7 @@ function translate(){
  for(const eye of document.querySelectorAll('[data-reveal]')){const on=eye.getAttribute('aria-pressed')==='true';eye.title=tr(on?'hideKey':'showKey');eye.setAttribute('aria-label',eye.title);}
  if(testState.state!=='idle')showTest(testState.state,testState.key,testState.vars);
  if(noticeState)notice(noticeState.text,noticeState.success,noticeState.key,noticeState.vars);
+ for(const [field,message] of Object.entries(fieldMessages))fieldError(field,message);
  if(lastStatus)displayStatus(lastStatus);
 }
 function keyPlaceholder(){$('api-key').placeholder=tr(config.hasKey?'keySaved':'keyEmpty');$('local-key').placeholder=tr(config.hasLocalKey?'localKeySaved':'localKeyEmpty');$('clear-key').hidden=!(selectedProvider()==='local'?config.hasLocalKey:config.hasKey);}
@@ -87,7 +114,7 @@ for(const btn of document.querySelectorAll('[data-panel]'))btn.addEventListener(
 for(const [id,language]of [['lang-zh','zh-CN'],['lang-en','en']])$(id).addEventListener('click',async()=>{
  try{await rpc({type:'SET_LANGUAGE',language});config.language=language;translate();}catch(e){notice(e.message);}
 });
-for(const btn of document.querySelectorAll('[data-provider]'))btn.addEventListener('click',()=>{if(selectedProvider()===btn.dataset.provider)return;showProvider(btn.dataset.provider);dirty=true;if(testState.state!=='idle')showTest('idle');if(lastStatus)displayStatus(lastStatus);});
+for(const btn of document.querySelectorAll('[data-provider]'))btn.addEventListener('click',()=>{if(selectedProvider()===btn.dataset.provider)return;showProvider(btn.dataset.provider);dirty=true;clearFieldErrors();if(testState.state!=='idle')showTest('idle');if(lastStatus)displayStatus(lastStatus);});
 $('import-config').addEventListener('click',()=>$('config-file').click());
 $('config-file').addEventListener('change',async()=>{
  try{
@@ -98,28 +125,33 @@ $('config-file').addEventListener('change',async()=>{
  }catch(e){notice(e.message);}finally{$('config-file').value='';}
 });
 $('test-connection').addEventListener('click',async()=>{
- if(dirty){notify('saveFirst');return;}notice('');showTest('testing','testing',{name:providerName()});
- try{const result=await rpc({type:'TEST_CONNECTION'});showTest('ok','testOk',{name:result.providerName||providerName(),ms:result.latencyMs,model:result.model?` · ${result.model}`:''});}catch(e){showTest('fail','testFail',{error:errorText(config.language,e.message)});}
+ if(dirty){showTest('fail','saveFirst');return;}
+ if(selectedProvider()==='jev'&&!config.hasKey){showFieldErrors({apiKey:'请输入 JEV 密钥。'});return;}
+ notice('');showTest('testing','testing',{name:providerName()});
+ try{const result=await rpc({type:'TEST_CONNECTION'});showTest('ok','testOk',{name:result.providerName||providerName(),ms:result.latencyMs,model:result.model?` · ${result.model}`:''});}
+ catch(e){showTest('idle');if(!reportError(e.message))showTest('fail','testFail',{error:errorText(config.language,e.message)});}
 });
 $('show-overlay').addEventListener('change',async()=>{
  const input=$('show-overlay');input.disabled=true;
  try{const result=await rpc({type:'SET_OVERLAY',showOverlay:input.checked});config.showOverlay=result.showOverlay;notify(config.showOverlay?'overlayEnabled':'overlayDisabled',true);}
  catch(e){input.checked=config.showOverlay;notice(e.message);}finally{input.disabled=false;}
 });
-$('settings').addEventListener('input',e=>{if(e.target.id==='show-overlay')return;dirty=true;if(testState.state!=='idle')showTest('idle');if(lastStatus)displayStatus(lastStatus);});
+$('settings').addEventListener('input',e=>{if(e.target.id==='show-overlay')return;dirty=true;if(testState.state!=='idle')showTest('idle');const field=Object.keys(FIELD_IDS).find(f=>FIELD_IDS[f]===e.target.id);if(field)clearFieldError(field);if(lastStatus)displayStatus(lastStatus);});
 for(const eye of document.querySelectorAll('[data-reveal]'))eye.addEventListener('click',()=>{const input=$(eye.dataset.reveal),show=input.type==='password';input.type=show?'text':'password';eye.setAttribute('aria-pressed',String(show));eye.title=tr(show?'hideKey':'showKey');eye.setAttribute('aria-label',eye.title);input.focus();});
-$('hotkey').addEventListener('keydown',e=>{if(e.key==='Tab')return;e.preventDefault();const value=hotkeyFromEvent(e);if(value){$('hotkey').value=value;dirty=true;$('start').disabled=true;notify('hotkeyChanged',true);}});
+$('hotkey').addEventListener('keydown',e=>{if(e.key==='Tab')return;e.preventDefault();const value=hotkeyFromEvent(e);if(value){$('hotkey').value=value;dirty=true;clearFieldError('hotkey');if(testState.state!=='idle')showTest('idle');$('start').disabled=true;notify('hotkeyChanged',true);}});
 $('settings').addEventListener('submit',async e=>{
  e.preventDefault();
  try{
-  const input={language:config.language,provider:selectedProvider(),apiKey:$('api-key').value.trim(),apiBase:$('api-base').value.trim(),model:$('model').value.trim(),localKey:$('local-key').value.trim(),localBase:$('local-base').value.trim(),localModel:$('local-model').value.trim(),hotkey:$('hotkey').value,autoCamera:$('auto-camera').checked,showOverlay:$('show-overlay').checked,maxDecisions:Number($('budget').value)};validateSettings(input);
+  const input={language:config.language,provider:selectedProvider(),apiKey:$('api-key').value.trim(),apiBase:$('api-base').value.trim(),model:$('model').value.trim(),localKey:$('local-key').value.trim(),localBase:$('local-base').value.trim(),localModel:$('local-model').value.trim(),hotkey:$('hotkey').value,autoCamera:$('auto-camera').checked,showOverlay:$('show-overlay').checked,maxDecisions:$('budget').value.trim()===''?NaN:Number($('budget').value)};
+  clearFieldErrors();if(showFieldErrors(fieldErrors(input,{requireKey:!config.hasKey})))return;
+  validateSettings(input);
   if(!await chrome.permissions.request({origins:[originPattern(input.provider==='local'?input.localBase:input.apiBase)]}))throw new Error('未获得 API 访问授权，设置未保存。');
   config=await rpc({type:'SAVE_SETTINGS',settings:input});$('api-key').value='';$('local-key').value='';dirty=false;displayConfig();notify('saved',true);await refresh();
- }catch(error){notice(error.message);}
+ }catch(error){reportError(error.message);}
 });
 $('clear-key').addEventListener('click',async()=>{try{const provider=selectedProvider();await rpc({type:'CLEAR_KEY',provider});if(provider==='local'){config.hasLocalKey=false;$('local-key').value='';}else{config.hasKey=false;$('api-key').value='';}keyPlaceholder();notify('keyCleared',true);await refresh();}catch(e){notice(e.message);}});
 for(const [id,type]of [['start','START'],['stop','STOP']])$(id).addEventListener('click',async()=>{
- $(id).disabled=true;notice('');try{await rpc({type,tabId});await refresh();}catch(e){notice(e.message);$(id).disabled=false;}
+ $(id).disabled=true;notice('');try{await rpc({type,tabId});await refresh();}catch(e){if(reportError(e.message))openSettingsPanel();$(id).disabled=false;}
 });
 try{config=await rpc({type:'GET_SETTINGS'});translate();displayConfig();const [tab]=await chrome.tabs.query({active:true,currentWindow:true});tabId=tab?.id;await refresh();}catch(e){notice(e.message);$('status').textContent=tr('connectionFailed');}
 const timer=setInterval(()=>refresh().catch(e=>{if(lastStatus)displayStatus({...lastStatus,liveObservation:false});notice(e.message);}),1500);window.addEventListener('pagehide',()=>clearInterval(timer),{once:true});

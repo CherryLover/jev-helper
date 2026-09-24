@@ -66,6 +66,7 @@ const errors = {
  '对局已经结束或尚未开始。':'The match has ended or has not started.',
  '请先切换到王二火大的游戏标签页。':'Switch to the WannaFire game tab first.',
  '请先填写并保存 JEV 密钥。':'Enter and save your JEV key first.',
+ '请输入 JEV 密钥。':'Enter your JEV API key.',
  '请在插件中保存设置，授权访问所填 API 地址。':'Save settings to authorize access to the API URL.',
  'API 访问权限已被撤销，请重新保存设置。':'API permission was revoked. Save settings again.',
  '托管未能启动。':'Autopilot could not start.',

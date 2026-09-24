@@ -53,6 +53,32 @@ export function validateSettings(input, prior = {}) {
   if (s.apiKey.length > 4096 || /[\r\n]/.test(s.apiKey) || s.localKey.length > 4096 || /[\r\n]/.test(s.localKey)) throw new Error('密钥格式无效。');
   return s;
 }
+// Per-field validation for inline form errors. Same rules as validateSettings, but every field
+// is checked independently so each message can sit under its own input.
+export function fieldErrors(input, {requireKey = false} = {}) {
+  const errors = {}, local = input.provider === 'local';
+  const check = (field, fn) => { try { fn(); } catch (e) { errors[field] = e.message; } };
+  check(local ? 'localBase' : 'apiBase', () => apiEndpoint(String((local ? input.localBase : input.apiBase) ?? '')));
+  const model = String((local ? input.localModel : input.model) ?? '').trim();
+  if (!/^[\w.\/-]{1,80}$/.test(model)) errors[local ? 'localModel' : 'model'] = '模型名称无效。';
+  check('hotkey', () => normalizeHotkey(input.hotkey ?? ''));
+  const n = Number(input.maxDecisions);
+  if (!Number.isInteger(n) || n < 1 || n > 10000) errors.maxDecisions = '每局决策上限应为 1–10000。';
+  const keyField = local ? 'localKey' : 'apiKey', key = String(input[keyField] ?? '').trim();
+  if (key.length > 4096 || /[\r\n]/.test(key)) errors[keyField] = '密钥格式无效。';
+  else if (requireKey && !local && !key) errors.apiKey = '请输入 JEV 密钥。';
+  return errors;
+}
+// Which field a background error belongs to, so the popup can show it inline.
+export function errorField(message, provider = 'jev') {
+  const local = provider === 'local';
+  if (/JEV 密钥|更换 API 服务|密钥格式/.test(message)) return 'apiKey';
+  if (/API 地址|API 访问/.test(message)) return local ? 'localBase' : 'apiBase';
+  if (/模型名称/.test(message)) return local ? 'localModel' : 'model';
+  if (/快捷键/.test(message)) return 'hotkey';
+  if (/决策上限/.test(message)) return 'maxDecisions';
+  return '';
+}
 export const publicSettings = s => ({provider:s.provider==='local'?'local':'jev', providerName:activeProvider(s).name, apiBase:s.apiBase, model:s.model, localBase:s.localBase??DEFAULTS.localBase, localModel:s.localModel??DEFAULTS.localModel, hasLocalKey:!!s.localKey, hotkey:s.hotkey, autoCamera:s.autoCamera, showOverlay:s.showOverlay??DEFAULTS.showOverlay, maxDecisions:s.maxDecisions, language:s.language??DEFAULTS.language, hasKey:!!s.apiKey});
 export function prepareQuestions(body) {
   if (!body || JSON.stringify(body).length > 256000 || !body.state || typeof body.state !== 'object' || Array.isArray(body.state)) throw new Error('战况请求格式或大小无效。');

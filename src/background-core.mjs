@@ -1,4 +1,4 @@
-import {DEFAULTS, supportedGame, apiEndpoint, originPattern, validateSettings, publicSettings, prepareQuestions, validateAnswer, httpError, activeProvider, authHeaders} from './shared.mjs';
+import {DEFAULTS, supportedGame, apiEndpoint, originPattern, validateSettings, publicSettings, privateSettings, prepareQuestions, validateAnswer, httpError, activeProvider, authHeaders} from './shared.mjs';
 import {summarize,recordObservation} from './telemetry.mjs';
 
 export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = () => crypto.randomUUID()} = {}) {
@@ -174,7 +174,7 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
       return serial(controlLocks,sender.tab.id,async()=> (await getSession(sender.tab.id))?.running?stop(sender.tab.id):start(sender.tab.id));
     }
     if(!trustExtension(sender))throw new Error('此操作只允许在插件窗口中执行。');
-    if(message.type==='GET_SETTINGS')return publicSettings(await getSettings());
+    if(message.type==='GET_SETTINGS')return privateSettings(await getSettings());
     if(message.type==='SET_LANGUAGE' || message.type==='SET_OVERLAY'){
       const settings=await getSettings();
       if(message.type==='SET_LANGUAGE')settings.language=message.language==='en'?'en':'zh-CN';
@@ -204,14 +204,17 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
     }
     if(message.type==='SAVE_SETTINGS'){
       const prior=await getSettings(),input=message.settings??{};
-      if(input.apiBase && new URL(apiEndpoint(input.apiBase)).origin!==new URL(apiEndpoint(prior.apiBase)).origin && !input.apiKey?.trim())throw new Error('更换 API 服务时，请重新输入该服务的密钥。');
-      const config=validateSettings({...input,apiKey:input.apiKey?.trim()||prior.apiKey,localKey:input.localKey?.trim()||prior.localKey},prior);
+      // The form shows the stored keys, so what it sends is what gets saved; a message without
+      // a key field keeps the stored one. A new Jev host must come with a key typed for it.
+      const apiKey=typeof input.apiKey==='string'?input.apiKey.trim():prior.apiKey,localKey=typeof input.localKey==='string'?input.localKey.trim():prior.localKey;
+      if(input.apiBase && new URL(apiEndpoint(input.apiBase)).origin!==new URL(apiEndpoint(prior.apiBase)).origin && (!apiKey || apiKey===prior.apiKey))throw new Error('更换 API 服务时，请重新输入该服务的密钥。');
+      const config=validateSettings({...input,apiKey,localKey},prior);
       const before=activeProvider(prior),after=activeProvider(config);
       if(!await c.permissions.contains({origins:[originPattern(after.apiBase)]}))throw new Error('API 访问权限未获授权。');
       if(before.id!==after.id || after.apiKey!==before.apiKey || after.apiBase!==before.apiBase || after.model!==before.model){for(const s of Object.values(await c.storage.session.get(null)))if(s?.running)await stop(s.tabId,'settings_changed');}
       await c.storage.local.set({settings:config});
       await broadcastConfig(config);
-      return publicSettings(config);
+      return privateSettings(config);
     }
     if(message.type==='CLEAR_KEY'){
       const field=message.provider==='local'?'localKey':'apiKey';

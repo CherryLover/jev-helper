@@ -16,11 +16,11 @@ function mockChrome(shared){
 const answer=()=>new Response(JSON.stringify({answers:{tactics:{type:'choice',choice:'attack',confidence:.8}},model:'jev-test',usage:{input_tokens:40,output_tokens:8}}));
 async function setup(fetchImpl,shared){const mock=mockChrome(shared);const app=createBackground(mock.c,{fetchImpl,uuid:()=>crypto.randomUUID()});await app.ready;await app.handle({type:'START',tabId:7},extension);const s=await app.getSession(7);return {...mock,app,s,request:{type:'DECIDE',token:s.token,body}};}
 
-test('settings and key operations reject content scripts; injection and status never expose the key',async()=>{
+test('settings and key operations reject content scripts; only the popup sees the key, never injection or status',async()=>{
   const x=await setup(async()=>answer());
   assert.equal(x.listeners.localAccess.accessLevel,'TRUSTED_CONTEXTS');
   for(const type of ['GET_SETTINGS','SAVE_SETTINGS','CLEAR_KEY','START'])await assert.rejects(x.app.handle({type,tabId:7},sender));
-  const settings=await x.app.handle({type:'GET_SETTINGS'},extension);assert.equal(settings.hasKey,true);assert.equal(settings.apiKey,undefined);
+  const settings=await x.app.handle({type:'GET_SETTINGS'},extension);assert.equal(settings.hasKey,true);assert.equal(settings.apiKey,'test-only-secret');assert.equal(settings.localKey,'');
   const status=await x.app.handle({type:'GET_STATUS',tabId:7},extension);assert.equal(status.token,undefined);
   assert.doesNotMatch(JSON.stringify([x.messages,x.scripts]),/test-only-secret/);
 });
@@ -58,8 +58,15 @@ test('session budget survives worker restart and observations cannot overwrite c
 test('saving another API origin requires a new key; changing credentials stops the old session',async()=>{
   const x=await setup(async()=>answer());
   await assert.rejects(x.app.handle({type:'SAVE_SETTINGS',settings:{apiBase:'https://custom.example/v1'}},extension),/重新输入/);
-  await x.app.handle({type:'SAVE_SETTINGS',settings:{apiBase:'https://custom.example/v1',apiKey:'custom-test-key'}},extension);
-  assert.equal((await x.app.getSession(7)).running,false);assert.equal(x.data.local.settings.apiKey,'custom-test-key');
+  // The form resends the displayed (old) key: that is not a key for the new host either.
+  await assert.rejects(x.app.handle({type:'SAVE_SETTINGS',settings:{apiBase:'https://custom.example/v1',apiKey:'test-only-secret'}},extension),/重新输入/);
+  assert.equal((await x.app.getSession(7)).running,true);
+  const saved=await x.app.handle({type:'SAVE_SETTINGS',settings:{apiBase:'https://custom.example/v1',apiKey:'custom-test-key'}},extension);
+  assert.equal((await x.app.getSession(7)).running,false);assert.equal(x.data.local.settings.apiKey,'custom-test-key');assert.equal(saved.apiKey,'custom-test-key');
+  // What the form sends is what is stored: an omitted field keeps the key, an empty string clears it.
+  await x.app.handle({type:'SAVE_SETTINGS',settings:{maxDecisions:5}},extension);assert.equal(x.data.local.settings.apiKey,'custom-test-key');
+  await x.app.handle({type:'SAVE_SETTINGS',settings:{localKey:'  lan-token '}},extension);assert.equal(x.data.local.settings.localKey,'lan-token');
+  await x.app.handle({type:'SAVE_SETTINGS',settings:{localKey:''}},extension);assert.equal(x.data.local.settings.localKey,'');assert.equal(x.data.local.settings.apiKey,'custom-test-key');
 });
 test('invalid candidates never reach the executor; navigation revokes the session',async()=>{
   const x=await setup(async()=>new Response(JSON.stringify({answers:{tactics:{type:'choice',choice:'not-supplied'}}})));
@@ -152,7 +159,7 @@ test('local source: no key required, no Authorization header, local endpoint, an
   await x.app.handle({type:'START',tabId:7},extension);assert.equal((await x.app.getSession(7)).running,true);
   await x.app.handle({type:'SAVE_SETTINGS',settings:{provider:'jev'}},extension);
   assert.equal((await x.app.getSession(7)).running,false);
-  const settings=await x.app.handle({type:'GET_SETTINGS'},extension);assert.equal(settings.provider,'jev');assert.equal(settings.localBase,'http://127.0.0.1:8742/v1');assert.doesNotMatch(JSON.stringify(settings),/jev-secret|local-token/);
+  const settings=await x.app.handle({type:'GET_SETTINGS'},extension);assert.equal(settings.provider,'jev');assert.equal(settings.localBase,'http://127.0.0.1:8742/v1');assert.equal(settings.apiKey,'jev-secret');assert.equal(settings.localKey,'');assert.doesNotMatch(JSON.stringify(settings),/local-token/);
 });
 test('the Jev source still requires a key and the connection probe follows the selected source',async()=>{
   const x=mockChrome({local:{settings:{...DEFAULTS,apiKey:''}},session:{}});

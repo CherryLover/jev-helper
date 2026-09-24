@@ -80,6 +80,8 @@ export function errorField(message, provider = 'jev') {
   return '';
 }
 export const publicSettings = s => ({provider:s.provider==='local'?'local':'jev', providerName:activeProvider(s).name, apiBase:s.apiBase, model:s.model, localBase:s.localBase??DEFAULTS.localBase, localModel:s.localModel??DEFAULTS.localModel, hasLocalKey:!!s.localKey, hotkey:s.hotkey, autoCamera:s.autoCamera, showOverlay:s.showOverlay??DEFAULTS.showOverlay, maxDecisions:s.maxDecisions, language:s.language??DEFAULTS.language, hasKey:!!s.apiKey});
+// For the extension's own popup only: the stored keys, so the form can show them masked.
+export const privateSettings = s => ({...publicSettings(s), apiKey:s.apiKey??'', localKey:s.localKey??''});
 export function prepareQuestions(body) {
   if (!body || JSON.stringify(body).length > 256000 || !body.state || typeof body.state !== 'object' || Array.isArray(body.state)) throw new Error('战况请求格式或大小无效。');
   const entries = Object.entries(body.groups ?? {});

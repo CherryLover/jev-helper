@@ -206,3 +206,27 @@ test('the mission objective is saved, echoed to the popup and handed to the play
   assert.equal(x.scripts.find(s=>s.args?.[0]==='start').args[1].objective,'Destroy the Pentagon in the north-east');
   assert.equal((await app.handle({type:'OVERLAY_STATUS'},sender)).objective,undefined,'content scripts do not receive settings text');
 });
+
+test('a finished autopilot session becomes one match record with duration, counters, credit curve and statistics',async()=>{
+  const x=await setup(async()=>answer());
+  await x.app.handle(x.request,sender);
+  await x.app.handle({type:'EVENT',token:x.s.token,event:{kind:'observation',tick:101,credits:5000,state:{self:{credits:5000},ownArmyCount:6,gameSeconds:10,uncommittedCredits:4000}}},sender);
+  await x.app.handle({type:'EVENT',token:x.s.token,event:{kind:'action',tick:102,question:'tactics',choice:'attack',accepted:true,action:{type:'attack'}}},sender);
+  await x.app.handle({type:'EVENT',token:x.s.token,event:{kind:'outcome',result:'victory',tick:103}},sender);
+  await x.app.handle({type:'EVENT',token:x.s.token,event:{kind:'stop',reason:'victory'}},sender);
+  for(const type of ['MATCHES_LIST','MATCH_GET','MATCHES_CLEAR'])await assert.rejects(x.app.handle({type},sender));
+  const {matches}=await x.app.handle({type:'MATCHES_LIST'},extension);
+  assert.equal(matches.length,1);const m=matches[0];
+  assert.equal(m.decisions,1);assert.equal(m.requests,1);assert.equal(m.outcome,'victory');assert.equal(m.reason,'victory');assert.equal(m.providerName,'Jev');assert.equal(m.acceptedActions,1);assert.equal(m.armyMax,6);
+  assert.equal(m.credits.end,5000);assert.equal(m.samples,1);assert.equal(m.history,undefined);assert.ok(m.durationMs>=0);assert.equal(m.groups.tactics.asked,1);assert.equal(m.produced.attack,undefined);
+  const full=await x.app.handle({type:'MATCH_GET',id:m.id},extension);assert.equal(full.history.length,1);assert.equal(full.history[0].credits,5000);
+  assert.doesNotMatch(JSON.stringify(full),/test-only-secret|token|documentId/);
+  // Stopping again (manual, hotkey, page reload) never duplicates the record.
+  await x.app.handle({type:'STOP',tabId:7},extension);
+  assert.equal((await x.app.handle({type:'MATCHES_LIST'},extension)).matches.length,1);
+  // A second session produces a second, newest-first record; monitoring without autopilot produces none.
+  await x.app.handle({type:'START',tabId:7},extension);await x.app.handle({type:'STOP',tabId:7},extension);
+  const list=await x.app.handle({type:'MATCHES_LIST'},extension);assert.equal(list.matches.length,2);assert.ok(list.matches[0].startedAt>=list.matches[1].startedAt);assert.equal(list.matches[0].reason,'manual');
+  await assert.rejects(x.app.handle({type:'MATCH_GET',id:'nope'},extension));
+  await x.app.handle({type:'MATCHES_CLEAR'},extension);assert.equal((await x.app.handle({type:'MATCHES_LIST'},extension)).matches.length,0);
+});

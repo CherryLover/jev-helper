@@ -32,7 +32,36 @@ function reportError(message){
  if(field&&fieldError(field,message)){$(FIELD_IDS[field]).focus();return true;}
  notice(message);return false;
 }
-let logStatsCache;
+let logStatsCache,matchList=[],matchSelected,matchDetail;
+const fmtDuration=ms=>{const s=Math.max(0,Math.round(ms/1000)),h=Math.floor(s/3600),m=Math.floor(s%3600/60),sec=s%60;return h?`${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`:`${m}:${String(sec).padStart(2,'0')}`;};
+const outcomeText=m=>tr(messages[`matchOutcome_${m.outcome}`]?`matchOutcome_${m.outcome}`:'matchOutcome_');
+function renderMatchList(){
+ const ul=$('match-list');ul.replaceChildren();$('matches-count').textContent=matchList.length?String(matchList.length):'';$('matches-empty').hidden=matchList.length>0;
+ for(const m of matchList){const li=document.createElement('li'),btn=document.createElement('button');btn.type='button';btn.setAttribute('aria-pressed',String(m.id===matchSelected));
+  const row=document.createElement('span');row.className='row';const when=document.createElement('span');when.textContent=new Date(m.startedAt).toLocaleString(config.language,{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});const outcome=document.createElement('span');outcome.textContent=outcomeText(m);row.append(when,outcome);
+  const sub=document.createElement('span');sub.className='sub';sub.textContent=`${fmtDuration(m.durationMs)} · ${m.providerName||'Jev'} · ${tr('decisions')} ${format(m.decisions)} · ${tr('matchCreditsEnd')} ${format(m.credits?.end)}`;
+  btn.append(row,sub);btn.addEventListener('click',()=>selectMatch(m.id));li.append(btn);ul.append(li);}
+}
+function renderMatchDetail(m){
+ matchDetail=m;$('match-detail').hidden=!m;if(!m)return;
+ $('match-title').textContent=new Date(m.startedAt).toLocaleString(config.language,{hour12:false});$('match-outcome').textContent=outcomeText(m);
+ $('match-duration').textContent=fmtDuration(m.durationMs);$('match-decisions').textContent=format(m.decisions);$('match-credits').textContent=format(m.credits?.end);
+ const box=$('match-facts');box.replaceChildren();const line=text=>{const p=document.createElement('p');p.textContent=text;box.append(p);};
+ line(tr('matchFacts',{provider:m.providerName||'Jev',model:m.model||'—',requests:m.requests,failures:m.failures,avg:m.latencyAvg??'—',game:m.gameSeconds!=null?fmtDuration(m.gameSeconds*1000):'—'}));
+ line(tr('matchActions',{accepted:m.acceptedActions,waits:m.waits,army:format(m.armyMax),start:format(m.credits?.start),end:format(m.credits?.end),max:format(m.credits?.max)}));
+ const produced=Object.entries(m.produced??{}).map(([k,v])=>`${k}×${v}`).join('，');line(produced?tr('logProduce',{list:produced}):tr('logNoProduce'));
+ const groups=Object.entries(m.groups??{}).map(([id,g])=>`${id} ${g.waitRate}%`).join('，');if(groups)line(tr('matchGroups',{list:groups}));
+ if(m.objective)line(tr('matchObjective',{objective:m.objective}));
+ line(tr('matchReason',{reason:messages[m.reason]?tr(m.reason):m.reason||'—'}));
+ drawChart($('match-economy'),m.history??[],[{key:'credits',label:'creditsLegend',color:'#d9b76f'},{key:'freeCredits',label:'freeLegend',color:'#91cbb1'}],config.language,tr('economyChart'));
+ drawChart($('match-decision-chart'),m.history??[],[{key:'decisions',label:'decisionLegend',color:'#d9b76f'}],config.language,tr('decisionChart'));
+}
+async function selectMatch(id){matchSelected=id;renderMatchList();try{renderMatchDetail(await rpc({type:'MATCH_GET',id}));}catch(e){notice(e.message);}}
+async function refreshMatches(){
+ try{const {matches}=await rpc({type:'MATCHES_LIST'});matchList=matches;if(!matchList.some(m=>m.id===matchSelected))matchSelected=matchList[0]?.id;renderMatchList();
+  if(matchSelected)renderMatchDetail(await rpc({type:'MATCH_GET',id:matchSelected}));else renderMatchDetail(undefined);}
+ catch(e){notice(e.message);}
+}
 function renderLogStats(data){
  logStatsCache=data;const box=$('log-stats');box.replaceChildren();
  const s=data?.stats;$('log-size').textContent=data?.chars?tr('logSize',{kb:Math.round(data.chars/1024)}):'';
@@ -72,6 +101,7 @@ function translate(){
  if(noticeState)notice(noticeState.text,noticeState.success,noticeState.key,noticeState.vars);
  for(const [field,message] of Object.entries(fieldMessages))fieldError(field,message);
  if(logStatsCache)renderLogStats(logStatsCache);
+ if(activePanel==='matches'){renderMatchList();if(matchDetail)renderMatchDetail(matchDetail);}
  if(lastStatus)displayStatus(lastStatus);
 }
 function keyPlaceholder(){$('api-key').placeholder=tr('keyEmpty');$('local-key').placeholder=tr('localKeyEmpty');$('clear-key').hidden=!(selectedProvider()==='local'?config.hasLocalKey:config.hasKey);}
@@ -133,6 +163,7 @@ for(const btn of document.querySelectorAll('[data-panel]'))btn.addEventListener(
  activePanel=btn.dataset.panel;
  for(const other of document.querySelectorAll('[data-panel]')){const on=other===btn;other.setAttribute('aria-pressed',on);$(`panel-${other.dataset.panel}`).hidden=!on;}
  if(activePanel==='settings')refreshLog();
+ if(activePanel==='matches')refreshMatches();
  if(lastStatus)displayStatus(lastStatus);
 });
 $('log-export').addEventListener('click',async()=>{
@@ -140,6 +171,8 @@ $('log-export').addEventListener('click',async()=>{
  try{const data=await rpc({type:'LOG_EXPORT'});const stamp=new Date().toISOString().replace(/[-:]/g,'').replace('T','-').slice(0,15);const file=`jev-log-${stamp}.json`;downloadJson(file,data);notify('logExported',true,{file});}
  catch(e){notice(e.message);}finally{$('log-export').disabled=false;}
 });
+$('match-export').addEventListener('click',()=>{if(!matchDetail)return;const stamp=new Date(matchDetail.startedAt).toISOString().replace(/[-:]/g,'').replace('T','-').slice(0,15);const file=`jev-match-${stamp}.json`;downloadJson(file,matchDetail);notify('matchExported',true,{file});});
+$('matches-clear').addEventListener('click',async()=>{try{await rpc({type:'MATCHES_CLEAR'});matchSelected=undefined;notify('matchesCleared',true);await refreshMatches();}catch(e){notice(e.message);}});
 $('log-clear').addEventListener('click',async()=>{try{await rpc({type:'LOG_CLEAR'});notify('logCleared',true);await refreshLog();}catch(e){notice(e.message);}});
 for(const [id,language]of [['lang-zh','zh-CN'],['lang-en','en']])$(id).addEventListener('click',async()=>{
  try{await rpc({type:'SET_LANGUAGE',language});config.language=language;translate();}catch(e){notice(e.message);}

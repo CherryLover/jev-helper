@@ -106,7 +106,8 @@ assert.ok(Object.values(groups.salvage.actions).some(a=>a.type==='sell'&&a.objec
 assert.ok(!Object.values(groups.salvage.actions).some(a=>a.objectId===6||a.objectId===51),'preserve the refinery and miner factory');
 
 // Battle 12: a peaceful two-miner base repeatedly bought tanks, never reaching the naval economy gate.
-own.push(u(60,'MINER',7),u(61,'MINER',7)); credits=2000; enemies=[];
+// Economy targets now follow the situation: two refineries with steady credits justify a third miner.
+own.push(u(52,'REF',2,34,35),{...u(60,'MINER',7),isIdle:false},{...u(61,'MINER',7),isIdle:false}); credits=2000; enemies=[];
 snap=collectState(api,catalog);groups=candidateGroups(api,catalog,snap,{});
 assert.equal(snap.state.strategy.investment.name,'MINER','miner expansion must outrank discretionary technology');
 assert.ok(groups.vehicles.actions.produce_MINER);

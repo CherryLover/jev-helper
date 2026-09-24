@@ -121,6 +121,35 @@ function roleOf(rule) {
   return rule.category ?? "support or technology";
 }
 
+// Economy targets follow the actual situation instead of "three miners, two refineries":
+// income measured over the last window (credits gained plus credits spent), whether credits are
+// piling up or draining, and whether miners already sit idle without reachable ore.
+export const ECONOMY_WINDOW_TICKS = 1800;
+export function economyPlan(api, catalog, state, memory, units) {
+  const tick = api.tick();
+  const miners = units.filter(u => catalog[u.name]?.harvester);
+  const refineries = units.filter(u => catalog[u.name]?.refinery).length;
+  const credits = state.self?.credits ?? 0, spent = memory.spentCredits ?? 0;
+  const samples = memory.economySamples ??= [];
+  if (!samples.length || tick - samples.at(-1).tick >= 60) samples.push({ tick, credits, spent });
+  while (samples.length > 1 && tick - samples[0].tick > ECONOMY_WINDOW_TICKS) samples.shift();
+  const first = samples[0], span = tick - first.tick;
+  const income = (credits - first.credits) + (spent - first.spent);
+  const incomeRate = span >= 300 ? Math.round(income / span * 1000) : null;
+  const trend = credits - first.credits;
+  const idleMiners = miners.filter(u => u.isIdle && !findVisibleOre(api, u.tile)).length;
+  const surplus = credits >= 4000 && trend >= 0;
+  const starving = credits < 1500 && trend <= 0;
+  let targetMiners, reason;
+  if (!refineries) { targetMiners = 0; reason = "no refinery yet: a refinery comes before any miner"; }
+  else if (idleMiners) { targetMiners = miners.length; reason = `${idleMiners} of ${miners.length} miners idle without reachable ore; another miner would be wasted`; }
+  else if (surplus) { targetMiners = Math.max(1, miners.length); reason = `credits ${credits} and ${trend > 0 ? "rising" : "steady"} (${income >= 0 ? "+" : ""}${income} earned in the last window): money is not the bottleneck, keep ${targetMiners} miner${targetMiners === 1 ? "" : "s"}`; }
+  else if (starving) { targetMiners = Math.min(3, Math.max(2, refineries * 2)); reason = `credits ${credits} and falling: expand mining toward ${targetMiners} miners`; }
+  else { targetMiners = Math.min(3, Math.max(1, miners.length, refineries * 2)); reason = `income roughly covers spending (credits ${credits}, ${trend >= 0 ? "+" : ""}${trend} over the window): ${targetMiners} miner${targetMiners === 1 ? "" : "s"} for ${refineries} refiner${refineries === 1 ? "y" : "ies"}`; }
+  const targetRefineries = !refineries ? 1 : starving && miners.length >= 2 && !idleMiners ? 2 : refineries;
+  return { targetMiners, targetRefineries, incomeRate, trend, surplus, starving, idleMiners, reason };
+}
+
 // How the fighting is going, and what else could be brought to bear. Losses and kills come from
 // the ledger; a stalled assault or a losing exchange raises the escalation level, which in turn
 // raises the force needed before the next assault and points the model at every other arm.
@@ -324,10 +353,11 @@ export function candidateGroups(api, catalog, snapshot, memory) {
     factories = owned((r) => r.factory === "UnitType" && !r.naval);
   const powerMargin =
     (state.self.power?.total ?? 0) - (state.self.power?.drain ?? 0);
+  const plan = economyPlan(api, catalog, state, memory, units);
   state.economy = {
     refineries,
     miners,
-    targetMiners: 3,
+    ...plan,
     barracks,
     factories,
     powerMargin,
@@ -347,7 +377,7 @@ export function candidateGroups(api, catalog, snapshot, memory) {
     : null;
   const build = group(
     "construction",
-    "Choose the needed base investment. Establish power, refinery, barracks, vehicle factory, then 2 refineries and 3 ore miners for continuous tank production. Restore lost essential infrastructure immediately. Keep at least 50 spare power. Unlock technology and counter-weapons before duplicating the vehicle factory; a second factory is useful only with surplus income. Only proposed buildings currently contribute to these needs.",
+    `Choose the needed base investment. Establish power, refinery, barracks, vehicle factory. Economy targets follow the actual situation, not a fixed count: currently ${state.economy.targetRefineries} refiner${state.economy.targetRefineries === 1 ? "y" : "ies"} and ${state.economy.targetMiners} miner${state.economy.targetMiners === 1 ? "" : "s"} (${state.economy.reason}). Do not add refineries or miners beyond that while credits accumulate unused. Restore lost essential infrastructure immediately.` + " Keep at least 50 spare power. Unlock technology and counter-weapons before duplicating the vehicle factory; a second factory is useful only with surplus income. Only proposed buildings currently contribute to these needs.",
   );
   const mcv = units.find((u) => catalog[catalog[u.name]?.deploysInto]?.yard);
   if (mcv)
@@ -367,8 +397,8 @@ export function candidateGroups(api, catalog, snapshot, memory) {
       else if (!refineries) need = r.refinery;
       else if (!barracks) need = r.factory === "InfantryType";
       else if (!factories) need = r.factory === "UnitType";
-      else if (refineries < 2 && miners < 3) need = r.refinery;
-      else if (state.self.credits > 6000 && factories < 2)
+      else if (refineries < state.economy.targetRefineries) need = r.refinery;
+      else if (state.economy.surplus && factories < 2 && (queueOf(api.QueueType?.Vehicles ?? 3)?.size ?? 0) > 0)
         need = r.factory === "UnitType";
       if (need && state.self.credits >= Math.min(500, r.cost))
         build(
@@ -388,7 +418,7 @@ export function candidateGroups(api, catalog, snapshot, memory) {
   const vehicleType = api.QueueType?.Vehicles ?? 3;
   const train = group(
     "vehicles",
-    "Choose what the vehicle factory should produce next. Three ore miners are the economy target. Before there are 3 miners, buy a miner unless the base is under attack and needs a tank. After 3 miners, produce effective counters while preserving the strategy investment budget. Maintain 2 mobile anti-air escorts after 4 tanks, even before spotting aircraft. Use mobileAntiAirCount: deployed infantry guarding the base are not mobile escorts. URGENT: when airThreatCount is positive and mobileAntiAirCount is below 3, build mobile anti-air first; tanks cannot hit flying enemies. A completed queue should be refilled while affordable. Saving for the selected defensive or technology investment is intentional.",
+    `Choose what the vehicle factory should produce next. The miner target follows the economy, not a fixed number: ${state.economy.targetMiners} now (${state.economy.reason}). Below the target, buy a miner unless the base is under attack and needs a tank; at or above it, do not buy miners. Produce effective counters while preserving the strategy investment budget.` + " Maintain 2 mobile anti-air escorts after 4 tanks, even before spotting aircraft. Use mobileAntiAirCount: deployed infantry guarding the base are not mobile escorts. URGENT: when airThreatCount is positive and mobileAntiAirCount is below 3, build mobile anti-air first; tanks cannot hit flying enemies. A completed queue should be refilled while affordable. Saving for the selected defensive or technology investment is intentional.",
   );
   if (!queueOf(vehicleType)?.size && factories)
     for (const item of vehicleOptions(api,catalog,state)) {
@@ -1274,6 +1304,7 @@ export async function attachJevPlayer(api, options = {}) {
         if (execution.accepted) {
           status.accepted++;
           if (action.type === "produce" && action.placement) memory.plannedSites.set(action.name, action.placement);
+          if (action.type === "produce") memory.spentCredits = (memory.spentCredits ?? 0) + (action.cost ?? 0);
           if (action.type === "special") {
             rememberSpecial(memory, action, execution, api.tick());
             for (const unitId of execution.ids ?? []) memory.specialOrders.set(unitId, { tick: api.tick(), kind: action.kind });

@@ -13,7 +13,7 @@ export function vehicleOptions(api, catalog, state) {
   return api.production.available(api.QueueType?.Vehicles ?? 3).flatMap(item=>{
     const r=catalog[item.name];
     if(!r||r.naval||r.engineer||catalog[r.deploysInto]?.yard)return [];
-    const economic=r.harvester&&state.harvesters+incomingMiners<3;
+    const economic=r.harvester&&state.harvesters+incomingMiners<(state.economy?.targetMiners??3);
     const combat=!r.harvester&&[r.weapon,r.secondary].some(w=>w?.damage>0&&w.range>=4);
     const antiAir=[r.weapon,r.secondary].some(w=>w?.damage>0&&w.aa);
     const groundPower=antiAir&&r.category==='AFV' ? effectiveness(r,
@@ -24,7 +24,7 @@ export function vehicleOptions(api, catalog, state) {
     if(!economic&&!combat)return [];
     if(combat&&state.airThreatCount>0&&state.mobileAntiAirCount<aaTarget&&!antiAir)return [];
     if(combat&&antiAir&&!groundCore&&state.mobileAntiAirCount>=aaTarget)return [];
-    if(combat&&state.harvesters<2&&!state.baseUnderAttack)return [];
+    if(combat&&state.harvesters<Math.min(2,state.economy?.targetMiners??2)&&!state.baseUnderAttack)return [];
     if(economic&&state.baseUnderAttack&&state.mobileTankCount<5)return [];
     return [{...item,economic,antiAir}];
   });
@@ -223,7 +223,7 @@ export function investmentGroups(api, catalog, snapshot, memory, groups) {
   const defenseTargets = strategy.underPressure ? attackers : [];
   const targetDefenses = strategy.underPressure ? (strategy.suppressed ? 6 : 3) : 1;
   let defensePlan, coverage = 0;
-  if (s.harvesters >= (strategy.underPressure ? 1 : 2) && free(api.QueueType.Armory)) {
+  if (s.harvesters >= Math.min(2, s.economy?.targetMiners ?? 2, strategy.underPressure ? 1 : 2) && free(api.QueueType.Armory)) {
     const options = api.production.available(api.QueueType.Armory).filter(i => catalog[i.name]?.isBaseDefense && !catalog[i.name]?.wall)
       .map(i => ({ ...i, queue: api.QueueType.Armory, value: effectiveness(catalog[i.name], defenseTargets, catalog, api) }));
     coverage = defenseUnits.filter(u => defenseTargets.length
@@ -270,7 +270,7 @@ export function investmentGroups(api, catalog, snapshot, memory, groups) {
   const escortNeeded = s.airThreatCount>0 && s.mobileAntiAirCount<ATTACK_AA_ESCORTS;
   const incompleteForce = mobileCount<ATTACK_FORCE_SIZE || escortNeeded;
   const mobileDefenseNeeded = strategy.underPressure && incompleteForce;
-  const forceNeeded = incompleteForce && s.harvesters >= 2 && !economyPlan;
+  const forceNeeded = incompleteForce && s.harvesters >= Math.min(2, s.economy?.targetMiners ?? 2) && !economyPlan;
   const groundRole = name => !catalog[name]?.naval && !catalog[name]?.aircraft && catalog[name]?.category !== 'AirPower';
   const mobileOptions = vehicleOptions(api,catalog,s).filter(i=>!i.economic && groundRole(i.name))
     .map(i=>({...i,cost:catalog[i.name].cost,queue:api.QueueType.Vehicles}));
@@ -312,7 +312,7 @@ export function investmentGroups(api, catalog, snapshot, memory, groups) {
   if (!counterPlan && queuedCounter) counterPlan = { name:queuedCounter.name,
     cost:Math.max(0,queuedCounter.creditsEach*queuedCounter.quantity-queuedCounter.creditsSpent),
     queue:api.QueueType.Vehicles,category:'vehicles',purpose:strategy.underPressure?counterPurpose:'mobilize',pending:true };
-  const coreReady = !economyPlan && !forcePlan && !((mobileDefenseNeeded||forceNeeded) && counterPlan) && s.harvesters >= 2 && s.economy?.factories > 0 && (armorCount >= 4 || strategy.suppressed && coverage >= 2 || standoff.length > 0);
+  const coreReady = !economyPlan && !forcePlan && !((mobileDefenseNeeded||forceNeeded) && counterPlan) && s.harvesters >= Math.min(2, s.economy?.targetMiners ?? 2) && s.economy?.factories > 0 && (armorCount >= 4 || strategy.suppressed && coverage >= 2 || standoff.length > 0);
   const candidates = available.filter(i => i.type === api.ObjectType.Building && !ownNames.has(i.name))
     .filter(i => { const r = catalog[i.name]; return r && !r.naval && !r.yard && !r.refinery && !r.isBaseDefense && !r.wall && !(r.power > 0) && (isAirSupport(r) || r.buildCategory === 'Tech' && !r.factory); })
     .sort((a, b) => Number(isAirSupport(catalog[b.name])) - Number(isAirSupport(catalog[a.name])) || (catalog[b.name].techLevel ?? 0) - (catalog[a.name].techLevel ?? 0));
@@ -363,7 +363,7 @@ export function investmentGroups(api, catalog, snapshot, memory, groups) {
     g.instructions += ' Compare effective damage against the current enemy mix, range and technology level. Use newly unlocked counters instead of repeating the cheapest basic unit.';
     for (const [key,a] of Object.entries(g.actions)) if (a.type === 'produce') g.criteria[key] += ` Tech ${catalog[a.name]?.techLevel ?? 0}; estimated current-target effectiveness ${Math.round(effectiveness(catalog[a.name], enemies, catalog, api))}.`;
   }
-  if (groups.vehicles && s.harvesters >= 2 && armorCount < 4 && !strategy.investment) {
+  if (groups.vehicles && s.harvesters >= Math.min(2, s.economy?.targetMiners ?? 2) && armorCount < 4 && !strategy.investment) {
     groups.vehicles.instructions += ' URGENT: the base has fewer than four mobile armored units. Build the offered combat reinforcement now when affordable; do not wait for an unplanned future technology investment.';
     groups.vehicles.criteria.wait = 'Wait only while the queue is busy or none of these reinforcements is affordable. There is no reserved capital project now; an idle affordable queue leaves the base exposed.';
   }
@@ -408,7 +408,7 @@ function operationalGoals(api, catalog, snapshot, groups, memory = {}) {
       g.criteria.wait = 'Wait only if the miner is already queued or unavailable, or its minimum starting budget is unavailable. Do not reserve this miner budget forever without starting the miner.';
       continue;
     }
-    const blocked=s.strategy.recovery || s.harvesters<2 || q?.size>0 || !affordable.length;
+    const blocked=s.strategy.recovery || s.harvesters<Math.min(2,s.economy?.targetMiners??2) || q?.size>0 || !affordable.length;
     s.decisionReadiness[id]={queueIdle:!q?.size,current,target:desired,deficit:Math.max(0,desired-current),
       credits:s.self.credits,committedCredits:s.committedCredits,reserve:s.strategy.reserve,
       affordableCandidates:affordable.map(a=>a.name),waitingSupported:!needed||!!blocked};

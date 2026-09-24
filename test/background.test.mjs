@@ -324,3 +324,12 @@ test('external hosts are allowed by hand: until then a public plaintext address 
   const s=await app.getSession(7);await assert.rejects(app.handle({type:'DECIDE',token:s.token,body},sender),/允许的外部地址/,'a removed host stops being used at once');
   assert.deepEqual((await app.handle({type:'GET_SETTINGS'},extension)).allowedHosts,[]);
 });
+
+test('the data panel, opened in a tab, is trusted like the popup; game pages and other extensions are not',async()=>{
+  const x=await setup(async()=>answer());
+  await x.app.handle({type:'STOP',tabId:7},extension);
+  const panel={id:'test-extension',frameId:0,url:'chrome-extension://test-extension/dashboard.html',tab:{id:9}};
+  const {matches}=await x.app.handle({type:'MATCHES_LIST'},panel);assert.equal(matches.length,1,'the panel sees the recorded match');
+  assert.ok((await x.app.handle({type:'GET_SETTINGS'},panel)).hasKey);
+  for(const bad of [{...panel,url:'https://staging.wangerhuoda.com/'},{...panel,id:'other-extension'},{...panel,frameId:1},{...panel,url:'https://evil.test/chrome-extension://test-extension/'}])await assert.rejects(x.app.handle({type:'MATCHES_LIST'},bad));
+});

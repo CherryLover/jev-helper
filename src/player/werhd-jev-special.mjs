@@ -27,11 +27,11 @@ export function specialGroups(api, catalog, snapshot, memory, groups) {
       groups[id].actions[key] = action;
     };
   };
-  const addProduction = (add, item, purpose, placement) => {
+  const addProduction = (add, item, purpose, placement, extra = {}) => {
     const r = catalog[item.name];
     add(`produce_${item.name}`, `${purpose}: ${r.label}, cost ${r.cost}.`, {
       type: 'produce', name: item.name, queue: item.queue, cost: r.cost, minCredits: r.cost,
-      placement,
+      placement, ...extra,
     });
   };
   // Refresh revealed infrastructure at most once per 120 simulation ticks.
@@ -117,10 +117,28 @@ export function specialGroups(api, catalog, snapshot, memory, groups) {
       if (freeQueue(queue)) addProduction(group(queue === api.QueueType.Ships ? 'navy' : 'vehicles', 'Choose a useful vehicle for combined arms.'), { ...carrier, queue }, 'Build one transport for a landing force');
     }
   }
-  const engineering = group('engineering', 'Repair a bridge to restore mobility when engineers are available. Demolish a bridge only to delay a visible enemy attack, with no friendly troops on it and a viable alternative position. Preserve engineers after unsuccessful orders.');
+  const engineering = group('engineering', `Engineer tasks. Capture neutral technology structures and undefended enemy structures: a captured building changes hands intact and is often a mission objective${memory.objective ? ` (mission objective: ${memory.objective})` : ''}. Repair a bridge to restore mobility. Demolish a bridge only to delay a visible enemy attack, with no friendly troops on it and a viable alternative position. Preserve engineers after unsuccessful orders.`);
   // Repair huts near the base or near any of our units: a broken bridge on the advance route matters too.
   const huts = civilians.filter((u) => catalog[u.name]?.bridgeRepairHut && (distance(base.tile, u.tile) < 40 || units.some((o) => distance(o.tile, u.tile) < 25)));
   const engineers = units.filter((u) => catalog[u.name]?.engineer);
+  // Capture targets: neutral structures first (technology buildings, outposts), then enemy economic or
+  // production buildings with no armed enemy within nine tiles. Walls, defenses, huts and garrisonable
+  // civilian houses are never capture targets.
+  const enemyIds = new Set(enemies.map((u) => u.id));
+  const armedNear = (tile) => enemies.some((e) => (e.primaryWeapon || catalog[e.name]?.weapon?.damage > 0) && distance(e.tile, tile) <= 9);
+  const captureTargets = hostile
+    .filter((u) => u.type === api.ObjectType.Building && !own.has(u.id) && !u.garrison && !catalog[u.name]?.wall && !catalog[u.name]?.isBaseDefense && !catalog[u.name]?.bridgeRepairHut && !(catalog[u.name]?.weapon?.damage > 0))
+    .map((u) => ({ unit: u, neutral: !enemyIds.has(u.id), defended: armedNear(u.tile), dist: Math.min(...[base, ...engineers].map((o) => distance(o.tile, u.tile))) }))
+    .filter((c) => c.neutral || (!c.defended && (catalog[c.unit.name]?.refinery || catalog[c.unit.name]?.factory || catalog[c.unit.name]?.yard || catalog[c.unit.name]?.power > 0 || (catalog[c.unit.name]?.techLevel ?? 0) >= 2)))
+    .sort((a, b) => Number(b.neutral) - Number(a.neutral) || Number(a.defended) - Number(b.defended) || a.dist - b.dist)
+    .slice(0, 4);
+  memory.captureTargets = captureTargets.map((c) => c.unit.id);
+  for (const c of captureTargets) {
+    const engineer = engineers.filter((u) => idle(u, memory, tick)).sort((a, b) => distance(a.tile, c.unit.tile) - distance(b.tile, c.unit.tile))[0];
+    if (!engineer || tick - (memory.specialTargets?.get(`repair_${c.unit.id}`) ?? -10000) <= 600) continue;
+    engineering(`capture_${c.unit.id}`, `${c.neutral ? 'CAPTURE (neutral)' : 'CAPTURE (enemy, undefended)'}: send engineer #${engineer.id} into ${catalog[c.unit.name]?.label ?? c.unit.name} #${c.unit.id} at (${c.unit.tile.rx},${c.unit.tile.ry}), ${Math.round(distance(engineer.tile, c.unit.tile))} tiles away${c.defended ? '; armed enemies nearby, risky' : ''}. The engineer is consumed; the building becomes ours.`,
+      { type: 'special', kind: 'capture', ids: [engineer.id], targetId: c.unit.id, order: { type: api.OrderType.Capture, target: { objectId: c.unit.id } }, auto: c.neutral && !c.defended ? 2 : c.defended ? undefined : 3 });
+  }
   for (const hut of huts.slice(0, 3)) {
     const engineer = engineers.find((u) => idle(u, memory, tick));
     if (engineer && tick - (memory.specialTargets?.get(`repair_${hut.id}`) ?? -10000) > 1200)
@@ -128,9 +146,13 @@ export function specialGroups(api, catalog, snapshot, memory, groups) {
         { type: 'special', kind: 'repair_bridge', ids: [engineer.id], targetId: hut.id,
           order: { type: api.OrderType.Repair, target: { objectId: hut.id } } });
   }
-  if (huts.length && !engineers.length && freeQueue(api.QueueType.Infantry) && snapshot.state.self.credits > 1800) {
+  const engineersWanted = Math.min(2, captureTargets.length) + (huts.length ? 1 : 0);
+  if (engineersWanted > engineers.length && freeQueue(api.QueueType.Infantry) && snapshot.state.self.credits > 1800) {
     const engineer = available.find((u) => catalog[u.name]?.engineer && afford(catalog[u.name], 1200));
-    if (engineer) addProduction(group('infantry', ''), { ...engineer, queue: api.QueueType.Infantry }, 'Train one engineer for visible bridge repair');
+    const first = captureTargets[0];
+    if (engineer) addProduction(group('infantry', ''), { ...engineer, queue: api.QueueType.Infantry },
+      first ? `OBJECTIVE: train an engineer to capture ${catalog[first.unit.name]?.label ?? first.unit.name} #${first.unit.id}${captureTargets.length > 1 ? ` and ${captureTargets.length - 1} more capturable structure${captureTargets.length > 2 ? 's' : ''}` : ''}` : 'Train one engineer for visible bridge repair',
+      undefined, { auto: first && snapshot.state.self.credits >= catalog[engineer.name].cost + 1500 ? 3 : undefined });
   }
   for (const bridge of bridges.slice(0, 12)) {
     const tile = { rx: bridge.x, ry: bridge.y };
@@ -223,6 +245,7 @@ export function executeSpecial(api, action) {
       attackerNames: api.units('self').filter(u => action.ids.includes(u.id)).map(u => u.name) };
   }
   if (action.targetId !== undefined && !api.unit(action.targetId)) return { accepted: false, reason: 'target_no_longer_visible' };
+  if (action.kind === 'capture' && api.units('self').some((u) => u.id === action.targetId)) return { accepted: false, reason: 'already_owned' };
   if (action.kind === 'garrison') {
     const target = api.unit(action.targetId);
     if (!target?.garrison?.canOccupy || target.garrison.count >= target.garrison.capacity)
@@ -236,7 +259,7 @@ export function executeSpecial(api, action) {
     if (!api.order([action.targetId], { type: api.OrderType.Stop }))
       return { accepted: false, reason: 'transport_stop_rejected' };
   }
-  if (['garrison', 'load', 'repair_bridge'].includes(action.kind)) {
+  if (['garrison', 'load', 'repair_bridge', 'capture'].includes(action.kind)) {
     const deployed = api.units('self').filter((u) => action.ids.includes(u.id) && u.isDeployed).map((u) => u.id);
     if (deployed.length) return { accepted: api.deploy(deployed), ids: action.ids, phase: 'preparing' };
   }
@@ -249,6 +272,10 @@ export function rememberSpecial(memory, action, execution, tick) {
   if (action.kind === 'demolish_bridge' && execution.accepted && execution.bridge) {
     memory.specialTasks.push({ action, bridge: execution.bridge, attackerNames: execution.attackerNames,
       started: tick, lastProgress: tick, hitPoints: execution.bridge.hitPoints });
+    for (const id of action.ids) memory.specialOrders.set(id, { tick, kind: action.kind });
+  }
+  if (action.ids?.length && action.kind === 'capture' && execution.accepted) {
+    memory.specialTasks.push({ action, started: tick, submitted: tick });
     for (const id of action.ids) memory.specialOrders.set(id, { tick, kind: action.kind });
   }
   if (action.ids?.length && ['garrison', 'load'].includes(action.kind)) {
@@ -266,6 +293,22 @@ export function maintainSpecial(api, memory, emit) {
   memory.specialTasks = memory.specialTasks.filter((task) => {
     const { action } = task;
     if (action.kind === 'demolish_bridge') return maintainDemolition(api, memory, task, own, tick, emit);
+    if (action.kind === 'capture') {
+      const engineer = own.get(action.ids[0]), target = api.unit(action.targetId);
+      const done = (result) => { for (const id of action.ids) memory.specialOrders.delete(id); emit({ kind: result === 'completed' ? 'observed' : 'task', tick, task: 'capture', description: `capture ${result}: #${action.targetId}`, result, targetId: action.targetId }); return false; };
+      if (own.has(action.targetId)) return done('completed');
+      if (!engineer) return target ? done('engineer_lost') : done('incomplete');
+      if (!target && tick - task.started > 600) return done('target_lost');
+      if (tick - task.started > 2400) return done('timeout');
+      memory.specialOrders.set(engineer.id, { tick, kind: 'capture' });
+      if (target && engineer.isIdle && tick - task.submitted >= 150) {
+        const execution = executeSpecial(api, action);
+        if (!execution.accepted) return done('rejected');
+        task.submitted = tick;
+        emit({ kind: 'micro', tick, description: `capture: 工程师 #${engineer.id} 重新前往 #${action.targetId}`, targetId: action.targetId, ids: [engineer.id] });
+      }
+      return true;
+    }
     const target = api.unit(action.targetId);
     const contained = action.kind === 'garrison' ? target?.garrison?.unitIds : target?.transport?.unitIds;
     const entered = action.ids.filter((id) => contained?.includes(id));

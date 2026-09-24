@@ -1,6 +1,6 @@
 {
   "name": "werhd-jev-extension",
-  "version": "0.5.9",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "description": "王二火大 Jev 浏览器托管扩展",

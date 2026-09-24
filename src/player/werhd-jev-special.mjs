@@ -169,13 +169,14 @@ export function specialGroups(api, catalog, snapshot, memory, groups) {
   const damagedBridges = bridges.filter((b) => Number.isFinite(b.hitPoints) && b.maxHitPoints > 0 && b.hitPoints < b.maxHitPoints).length;
   const bridgeUrgent = !!stuckTarget || damagedBridges > 0;
   const bridgeWhy = [stuckTarget && `our attack on ${stuckTarget} has made no progress for ${Math.max(stuckFor, ATTACK_STUCK_TICKS)} ticks, most likely because a destroyed bridge cuts the land route`, damagedBridges && `${damagedBridges} damaged bridge piece${damagedBridges > 1 ? 's are' : ' is'} visible`].filter(Boolean).join('; ');
-  // Bridge repair comes first: it reopens the route the whole army needs.
-  for (const hut of huts.slice(0, 3)) {
+  // Bridge repair comes first: it reopens the route the whole army needs. It is offered only with a
+  // reason (a stuck attack or visible damage): "no known damage yet" sent engineers on empty trips.
+  for (const hut of bridgeUrgent ? huts.slice(0, 3) : []) {
     const engineer = engineers.filter((u) => idle(u, memory, tick)).sort((a, b) => distance(a.tile, hut.tile) - distance(b.tile, hut.tile))[0];
     if (engineer && tick - (memory.specialTargets?.get(`repair_${hut.id}`) ?? -10000) > 1200)
-      engineering(`repair_${hut.id}`, `${bridgeUrgent ? `PRIORITY BRIDGE REPAIR (${bridgeWhy})` : 'BRIDGE REPAIR (no known damage yet)'}: send engineer #${engineer.id} into bridge repair hut #${hut.id} at (${hut.tile.rx},${hut.tile.ry}), ${Math.round(distance(engineer.tile, hut.tile))} tiles away. A repaired bridge reopens the land route; if the bridge is intact the order is simply rejected and nothing is lost.`,
+      engineering(`repair_${hut.id}`, `PRIORITY BRIDGE REPAIR (${bridgeWhy}): send engineer #${engineer.id} into bridge repair hut #${hut.id} at (${hut.tile.rx},${hut.tile.ry}), ${Math.round(distance(engineer.tile, hut.tile))} tiles away. A repaired bridge reopens the land route; if the bridge is intact the order is simply rejected and nothing is lost.`,
         { type: 'special', kind: 'repair_bridge', ids: [engineer.id], targetId: hut.id,
-          order: { type: api.OrderType.Repair, target: { objectId: hut.id } }, auto: bridgeUrgent ? 2 : undefined });
+          order: { type: api.OrderType.Repair, target: { objectId: hut.id } }, auto: 2 });
   }
   // Capture targets: neutral structures first (technology buildings, outposts), then enemy economic or
   // production buildings with no armed enemy within nine tiles. Walls, defenses, huts and garrisonable
@@ -197,7 +198,7 @@ export function specialGroups(api, catalog, snapshot, memory, groups) {
     engineering(`capture_${c.unit.id}`, `${c.neutral ? 'CAPTURE (neutral)' : 'CAPTURE (enemy, undefended)'}: send engineer #${engineer.id} into ${catalog[c.unit.name]?.label ?? c.unit.name} #${c.unit.id} at (${c.unit.tile.rx},${c.unit.tile.ry}), ${Math.round(distance(engineer.tile, c.unit.tile))} tiles away${c.defended ? '; armed enemies nearby, risky' : ''}. The engineer is consumed; the building becomes ours.`,
       { type: 'special', kind: 'capture', ids: [engineer.id], targetId: c.unit.id, order: { type: api.OrderType.Capture, target: { objectId: c.unit.id } }, auto: c.neutral && !c.defended ? 2 : c.defended ? undefined : 3 });
   }
-  const engineersWanted = Math.min(2, captureTargets.length) + (huts.length ? 1 : 0);
+  const engineersWanted = Math.min(2, captureTargets.length) + (huts.length && bridgeUrgent ? 1 : 0);
   if (engineersWanted > engineers.length && freeQueue(api.QueueType.Infantry) && snapshot.state.self.credits > 1800) {
     const engineer = available.find((u) => catalog[u.name]?.engineer && afford(catalog[u.name], 1200));
     const first = captureTargets[0];

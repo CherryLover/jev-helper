@@ -71,10 +71,11 @@ test('an attack stuck for a long time makes bridge repair a priority with an aut
   const enemies=[unit(501,'EPOWER',2,60,40)];
   const w=world({ own, neutral, enemies });
   w.memory.mission={type:'mission',mode:'attack',targetId:501,ids:[30],since:3000};
-  // First look: the attack just started, repair is offered without urgency and without a fallback.
+  // First look: the attack just started and no damage is visible, so no repair is offered (0.6.0:
+  // "no known damage yet" sent engineers on empty trips).
   let groups={}; specialGroups(w.api, catalog, snapshotOf(w.api), w.memory, groups);
-  assert.match(groups.engineering.criteria.repair_300, /^BRIDGE REPAIR \(no known damage yet\)/);
-  assert.equal(groups.engineering.actions.repair_300.auto, undefined);
+  assert.ok(!groups.engineering.actions.repair_300, 'no bridge repair without a reason');
+  assert.ok(groups.engineering.actions.capture_102, 'captures are still offered');
   // Re-issuing the same target does not reset the stuck clock.
   w.memory.mission={...w.memory.mission,since:3000+ATTACK_STUCK_TICKS};
   w.setTick(3001+ATTACK_STUCK_TICKS);

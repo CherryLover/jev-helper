@@ -246,11 +246,10 @@ export function investmentGroups(api, catalog, snapshot, memory, groups) {
       add(dg, item, `${strategy.underPressure ? 'URGENT' : 'PREPARE'}: counter-fire at (${placement.x},${placement.y}), estimated effectiveness ${Math.round(item.value)}; enemy ranges ${reachableThreats.map(e=>currentWeapon(e,catalog).range).join(',') || 'no local target'}`, Math.min(200, r.cost), placement);
       defensePlan ??= { name: item.name, cost: r.cost, queue: item.queue };
     }
-    if (!strategy.underPressure && defenseUnits.length && s.uncommittedCredits > 1800 && buildings.filter(u => catalog[u.name]?.wall).length < 4) {
-      const wall = api.production.available(api.QueueType.Armory).find(i => catalog[i.name]?.wall);
-      if (wall) { const placement = chooseBuildingSite(api, catalog, wall.name, units, memory); if (placement) add(dg, { ...wall, queue: api.QueueType.Armory }, 'Screen a defended approach without blocking factory exits', catalog[wall.name].cost, placement); }
-    }
   }
+  // Without a threat this question was answered "wait" every time and cost about a quarter of the
+  // tokens of each turn; it is only asked while the base is under pressure.
+  if (!strategy.underPressure) { delete groups.defenses; defensePlan = undefined; }
   const cg = group('construction', 'Restore core infrastructure, then unlock higher technology. During suppression, build a firing line and develop a counter instead of spending forever on basic tanks. Aircraft factories and higher-tech buildings unlock new options. A repair dock is not an airfield.');
   // Remove the old special-layer air-support guess and rebuild the tech options from rule categories.
   for (const [key, a] of Object.entries(cg.actions)) if (a.type === 'produce' && !catalog[a.name]?.naval && !catalog[a.name]?.refinery && !(catalog[a.name]?.power > 0) && !['InfantryType', 'UnitType', 'BuildingType'].includes(catalog[a.name]?.factory)) {

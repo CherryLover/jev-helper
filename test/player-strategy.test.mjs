@@ -184,7 +184,7 @@ assert.ok(!groups.construction.actions.produce_AIRFIELD,'six vehicles cannot be 
 credits=200;snap=collectState(api,catalog);groups=candidateGroups(api,catalog,snap,{});
 assert.equal(snap.state.strategy.investment.name,'TANK','the plan exists before enough starting cash arrives');
 assert.equal(snap.state.decisionReadiness.vehicles.waitingSupported,true);
-assert.ok(!groups.defenses.actions.produce_GUN,'low cash must not erase the protected army investment');
+assert.ok(!groups.defenses?.actions?.produce_GUN,'low cash must not erase the protected army investment');
 credits=250;snap=collectState(api,catalog);groups=candidateGroups(api,catalog,snap,{});
 assert.ok(groups.vehicles.actions.produce_TANK,'the same reserved unit becomes executable when starting cash arrives');
 assert.equal(snap.state.decisionReadiness.vehicles.waitingSupported,false);

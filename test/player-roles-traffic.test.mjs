@@ -134,8 +134,11 @@ enemies=[];
 const offerBeforeWalls=api.production.available;
 api.production.available=q=>q===1?[...offerBeforeWalls(q),{name:'WALL',type:2}]:offerBeforeWalls(q);
 snap=collectState(api,catalog);groups=candidateGroups(api,catalog,snap,{});
-const wallChoice=groups.defenses.actions.produce_WALL;
-assert.ok(wallChoice?.placement,'stable, funded defenses may add a wall at a legal site');
-assert.ok(trafficClearance({rx:wallChoice.placement.x,ry:wallChoice.placement.y},own.filter(u=>u.type===2),own,catalog),
-  'the final wall candidate must preserve refinery and factory access');
-console.log('Final wall candidate: legal placement and traffic access survive complete strategy filtering');
+// 0.6.0: without a base threat the defense question is no longer asked at all (a small model answered
+// "wait" every time), so peacetime walls are not offered; wall sites still keep factory access.
+assert.equal(groups.defenses,undefined,'no defense question in peacetime');
+const wallSite=chooseBuildingSite(api,catalog,'WALL',own,{});
+assert.ok(wallSite,'a wall still has a legal site');
+assert.ok(trafficClearance({rx:wallSite.x,ry:wallSite.y},own.filter(u=>u.type===2),own,catalog),
+  'a wall site must preserve refinery and factory access');
+console.log('Wall sites: no peacetime defense question; legal placement keeps traffic access');

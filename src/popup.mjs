@@ -1,4 +1,4 @@
-import {DEFAULTS,validateSettings,originPattern,hotkeyFromEvent,fieldErrors,errorField} from './shared.mjs';
+import {DEFAULTS,validateSettings,originPattern,hotkeyFromEvent,fieldErrors,errorField,plaintextPublic,normalizeHost} from './shared.mjs';
 import {importSettings} from './import-settings.mjs';
 import {t,errorText,messages,officialWebsiteUrl} from './i18n.mjs';
 import {drawChart,drawPositions} from './charts.mjs';
@@ -41,6 +41,25 @@ async function authorize(){
  try{const granted=await chrome.permissions.request({origins:[config.origin]});config=await rpc({type:'GET_SETTINGS'});renderPermission();if(granted&&config.permitted)notify('authorized',true,{origin:config.origin});await refresh();}
  catch(e){notice(e.message);}finally{$('authorize').disabled=false;}
 }
+// Explicitly allowed external hosts: shown as chips, added with one click (which also requests access).
+function renderAllowedHosts(){
+ const ul=$('allowed-hosts');ul.replaceChildren();
+ for(const host of config.allowedHosts??[]){const li=document.createElement('li'),text=document.createElement('span'),btn=document.createElement('button');text.textContent=host;btn.type='button';btn.textContent='×';btn.title=tr('removeHost');btn.setAttribute('aria-label',`${tr('removeHost')} ${host}`);
+  btn.addEventListener('click',async()=>{try{config={...config,...await rpc({type:'DISALLOW_HOST',host})};renderAllowedHosts();notify('hostRemoved',true,{host});}catch(e){notice(e.message);}});li.append(text,btn);ul.append(li);}
+ $('allow-host').placeholder=tr('allowHostPlaceholder');
+}
+async function allowHost(){
+ const input=$('allow-host'),slot=$('err-allow-host');slot.hidden=true;input.classList.remove('invalid');
+ let host;try{host=normalizeHost(input.value);}catch(e){slot.textContent=errorText(config.language,e.message);slot.hidden=false;input.classList.add('invalid');input.focus();return;}
+ $('allow-host-add').disabled=true;
+ try{
+  try{await chrome.permissions.request({origins:[`*://${host}/*`]});}catch{}
+  config={...config,...await rpc({type:'ALLOW_HOST',host})};input.value='';renderAllowedHosts();notify('hostAllowed',true,{host});
+  clearFieldError('localBase');clearFieldError('apiBase');
+ }catch(e){notice(e.message);}finally{$('allow-host-add').disabled=false;}
+}
+// Plain HTTP to a public address is allowed but flagged under the field; private networks stay quiet.
+function renderPlaintextWarnings(){for(const id of ['api-base','local-base']){const warn=$(`warn-${id}`),show=plaintextPublic($(id).value);warn.hidden=!show;if(show)warn.textContent=tr('plaintextWarning');}}
 function openSettingsPanel(){for(const other of document.querySelectorAll('[data-panel]')){const on=other.dataset.panel==='settings';other.setAttribute('aria-pressed',on);$(`panel-${other.dataset.panel}`).hidden=!on;}activePanel='settings';}
 // The connection probe reports on its own button: testing → ok / fail. Any edit resets it.
 function showTest(state,key,vars){testState={state,key,vars};const btn=$('test-connection');btn.dataset.state=state;btn.disabled=state==='testing';$('test-label').textContent=tr(key??'test',vars);}
@@ -74,7 +93,7 @@ function showProvider(provider){
 function displayConfig(){
  $('api-base').value=config.apiBase;$('model').value=config.model;$('local-base').value=config.localBase;$('local-model').value=config.localModel;
  // Stored keys are shown masked; the eye button reveals them on demand.
- $('api-key').value=config.apiKey??'';$('local-key').value=config.localKey??'';$('objective').value=config.objective??'';showProvider(config.provider);$('hotkey').value=config.hotkey;$('budget').value=config.maxDecisions;$('auto-camera').checked=config.autoCamera;$('show-overlay').checked=config.showOverlay;$('auto-report').checked=config.autoReport!==false;keyPlaceholder();
+ $('api-key').value=config.apiKey??'';$('local-key').value=config.localKey??'';$('objective').value=config.objective??'';showProvider(config.provider);renderPlaintextWarnings();renderAllowedHosts();$('hotkey').value=config.hotkey;$('budget').value=config.maxDecisions;$('auto-camera').checked=config.autoCamera;$('show-overlay').checked=config.showOverlay;$('auto-report').checked=config.autoReport!==false;keyPlaceholder();
 }
 function renderAwareness(s){
  const o=s.observation;$('awareness').hidden=!o;$('no-battle').hidden=!!o;
@@ -155,14 +174,15 @@ $('auto-report').addEventListener('change',async()=>{
  try{const result=await rpc({type:'SET_AUTO_REPORT',autoReport:input.checked});config.autoReport=result.autoReport;notify(config.autoReport?'autoReportOn':'autoReportOff',true);}
  catch(e){input.checked=config.autoReport!==false;notice(e.message);}finally{input.disabled=false;}
 });
-$('settings').addEventListener('input',e=>{if(e.target.id==='show-overlay'||e.target.id==='auto-report')return;dirty=true;if(testState.state!=='idle')showTest('idle');const field=Object.keys(FIELD_IDS).find(f=>FIELD_IDS[f]===e.target.id);if(field)clearFieldError(field);if(lastStatus)displayStatus(lastStatus);});
+$('settings').addEventListener('input',e=>{if(e.target.id==='api-base'||e.target.id==='local-base')renderPlaintextWarnings();if(e.target.id==='show-overlay'||e.target.id==='auto-report')return;dirty=true;if(testState.state!=='idle')showTest('idle');const field=Object.keys(FIELD_IDS).find(f=>FIELD_IDS[f]===e.target.id);if(field)clearFieldError(field);if(lastStatus)displayStatus(lastStatus);});
 for(const eye of document.querySelectorAll('[data-reveal]'))eye.addEventListener('click',()=>{const input=$(eye.dataset.reveal),show=input.type==='password';input.type=show?'text':'password';eye.setAttribute('aria-pressed',String(show));eye.title=tr(show?'hideKey':'showKey');eye.setAttribute('aria-label',eye.title);input.focus();});
 $('hotkey').addEventListener('keydown',e=>{if(e.key==='Tab')return;e.preventDefault();const value=hotkeyFromEvent(e);if(value){$('hotkey').value=value;dirty=true;clearFieldError('hotkey');if(testState.state!=='idle')showTest('idle');$('start').disabled=true;notify('hotkeyChanged',true);}});
 $('settings').addEventListener('submit',async e=>{
  e.preventDefault();
  try{
   const input={language:config.language,provider:selectedProvider(),apiKey:$('api-key').value.trim(),apiBase:$('api-base').value.trim(),model:$('model').value.trim(),localKey:$('local-key').value.trim(),localBase:$('local-base').value.trim(),localModel:$('local-model').value.trim(),hotkey:$('hotkey').value,autoCamera:$('auto-camera').checked,showOverlay:$('show-overlay').checked,maxDecisions:$('budget').value.trim()===''?NaN:Number($('budget').value),objective:$('objective').value};
-  clearFieldErrors();if(showFieldErrors(fieldErrors(input,{requireKey:true})))return;
+  input.allowedHosts=config.allowedHosts??[];
+  clearFieldErrors();if(showFieldErrors(fieldErrors(input,{requireKey:true}))){if(fieldMessages.localBase?.includes('允许')||fieldMessages.apiBase?.includes('允许'))$('allowed-hosts-box').open=true;return;}
   validateSettings(input);
   config=await rpc({type:'SAVE_SETTINGS',settings:input});dirty=false;displayConfig();
   if(!config.permitted){
@@ -174,6 +194,7 @@ $('settings').addEventListener('submit',async e=>{
  }catch(error){reportError(error.message);}
 });
 $('authorize').addEventListener('click',authorize);
+$('allow-host-add').addEventListener('click',allowHost);$('allow-host').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();allowHost();}});$('allow-host').addEventListener('input',()=>{$('err-allow-host').hidden=true;$('allow-host').classList.remove('invalid');});
 $('open-dashboard').addEventListener('click',()=>chrome.tabs.create({url:chrome.runtime.getURL('dashboard.html')}));
 $('clear-key').addEventListener('click',async()=>{try{const provider=selectedProvider();await rpc({type:'CLEAR_KEY',provider});if(provider==='local'){config.hasLocalKey=false;config.localKey='';$('local-key').value='';}else{config.hasKey=false;config.apiKey='';$('api-key').value='';}keyPlaceholder();notify('keyCleared',true);await refresh();}catch(e){notice(e.message);}});
 for(const [id,type]of [['start','START'],['stop','STOP']])$(id).addEventListener('click',async()=>{

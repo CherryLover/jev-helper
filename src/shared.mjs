@@ -1,4 +1,4 @@
-export const DEFAULTS = /* @__PURE__ */ Object.freeze({ provider: 'jev', apiBase: 'https://api.typesafe.ai/v1', model: 'jev-latest', localBase: 'http://127.0.0.1:8742/v1', localModel: 'laya', hotkey: 'Alt+Shift+J', autoCamera: true, showOverlay: true, maxDecisions: 2000, objective: '', autoReport: true, language:'zh-CN' });
+export const DEFAULTS = /* @__PURE__ */ Object.freeze({ provider: 'jev', apiBase: 'https://api.typesafe.ai/v1', model: 'jev-latest', localBase: 'http://127.0.0.1:8742/v1', localModel: 'laya', hotkey: 'Alt+Shift+J', autoCamera: true, showOverlay: true, maxDecisions: 2000, objective: '', autoReport: true, allowedHosts: [], language:'zh-CN' });
 export const PROVIDERS = /* @__PURE__ */ Object.freeze({ jev: { id: 'jev', name: 'Jev', requiresKey: true }, local: { id: 'local', name: 'Laya', requiresKey: false } });
 // The active provider decides which stored endpoint, key and model the background uses.
 export function activeProvider(s) {
@@ -12,15 +12,50 @@ export const CHANNEL = 'werhd-jev-extension-v1';
 export function supportedGame(url) {
   try { const u = new URL(url); return u.protocol === 'https:' && GAME_HOSTS.includes(u.hostname) || u.protocol === 'http:' && ['localhost','127.0.0.1'].includes(u.hostname); } catch { return false; }
 }
-// Plain HTTP is accepted only for this machine and private LAN addresses (a local model server).
-export const privateHost = h => ['localhost','127.0.0.1','[::1]'].includes(h) || /^10\.\d+\.\d+\.\d+$/.test(h) || /^192\.168\.\d+\.\d+$/.test(h) || /^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/.test(h) || /\.local$/.test(h);
+// Any reachable address may be configured; access is requested for exactly that origin. This
+// classifier only decides whether plain HTTP deserves a warning: traffic to this machine, private
+// LAN ranges, link-local, Tailscale (100.64/10, *.ts.net), private IPv6, private-network suffixes
+// and single-label hostnames never crosses the public internet.
+export function privateHost(host) {
+  const h = String(host ?? '').toLowerCase().replace(/^\[|\]$/g, '');
+  if (['localhost', '127.0.0.1', '::1'].includes(h) || /^127\.\d+\.\d+\.\d+$/.test(h)) return true;
+  const v4 = h.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (v4) {
+    const [a, b] = v4.slice(1).map(Number);
+    return a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127);
+  }
+  if (h.includes(':')) return /^(fc|fd)[0-9a-f]{2}:/.test(h) || /^fe[89ab][0-9a-f]:/.test(h);
+  if (/\.(local|lan|home|internal|intranet|localdomain|home\.arpa|ts\.net)$/.test(h)) return true;
+  return /^[a-z0-9-]+$/.test(h);
+}
 export function apiEndpoint(value) {
   let u; try { u = new URL(value.trim()); } catch { throw new Error('请输入有效的 API 地址。'); }
   if (u.username || u.password || u.search || u.hash) throw new Error('API 地址不能包含账号、查询参数或片段。');
-  if (u.protocol !== 'https:' && !(u.protocol === 'http:' && privateHost(u.hostname))) throw new Error('API 地址须使用 HTTPS；本机或局域网地址可使用 HTTP。');
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error('API 地址须以 http:// 或 https:// 开头。');
   u.pathname = u.pathname.replace(/\/+$/, '');
   if (!u.pathname.endsWith('/systemone')) u.pathname += '/systemone';
   return u.href;
+}
+// True when the key would travel in clear text over a network that may be public.
+export const plaintextPublic = value => { try { const u = new URL(apiEndpoint(value)); return u.protocol === 'http:' && !privateHost(u.hostname); } catch { return false; } };
+// Hosts the user explicitly allowed beyond this machine and private networks: one hostname or IP per entry.
+export function normalizeHost(value) {
+  const text = String(value ?? '').trim().toLowerCase();
+  if (!text) throw new Error('请输入地址。');
+  let u; try { u = new URL(/^[a-z]+:\/\//.test(text) ? text : `http://${text}`); } catch { throw new Error('请输入有效的地址。'); }
+  if (!u.hostname || u.username || u.password) throw new Error('请输入有效的地址。');
+  const host = u.hostname.replace(/^\[|\]$/g, '');
+  // Browsers percent-encode junk into a "valid" host; only real hostnames, IPv4 or IPv6 pass.
+  const named = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/.test(host), v6 = /^[0-9a-f:.]+$/.test(host) && host.includes(':');
+  if (!named && !v6) throw new Error('请输入有效的地址。');
+  return host;
+}
+export const sanitizeAllowedHosts = list => [...new Set((Array.isArray(list) ? list : []).map(h => { try { return normalizeHost(h); } catch { return ''; } }).filter(Boolean))].slice(0, 32);
+// Plain HTTP to a public address is used only when that host was allowed by hand; HTTPS and private networks need nothing.
+export function hostAllowed(value, allowedHosts = []) {
+  let u; try { u = new URL(apiEndpoint(value)); } catch { return false; }
+  const host = u.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  return u.protocol === 'https:' || privateHost(host) || sanitizeAllowedHosts(allowedHosts).includes(host);
 }
 export const originPattern = value => { const u = new URL(apiEndpoint(value)); return `${u.protocol}//${u.hostname}/*`; };
 export function normalizeHotkey(value) {
@@ -39,6 +74,8 @@ export function validateSettings(input, prior = {}) {
   s.provider = s.provider === 'local' ? 'local' : 'jev';
   s.apiBase = String(s.apiBase).trim(); apiEndpoint(s.apiBase);
   s.localBase = String(s.localBase ?? DEFAULTS.localBase).trim(); apiEndpoint(s.localBase);
+  s.allowedHosts = sanitizeAllowedHosts(s.allowedHosts);
+  if (!hostAllowed(s.provider === 'local' ? s.localBase : s.apiBase, s.allowedHosts)) throw new Error('公网明文地址需要先加入「允许的外部地址」。');
   s.model = String(s.model).trim();
   s.localModel = String(s.localModel ?? DEFAULTS.localModel).trim();
   if (!/^[\w.\/-]{1,80}$/.test(s.model) || !/^[\w.\/-]{1,80}$/.test(s.localModel)) throw new Error('模型名称无效。');
@@ -61,7 +98,8 @@ export function validateSettings(input, prior = {}) {
 export function fieldErrors(input, {requireKey = false} = {}) {
   const errors = {}, local = input.provider === 'local';
   const check = (field, fn) => { try { fn(); } catch (e) { errors[field] = e.message; } };
-  check(local ? 'localBase' : 'apiBase', () => apiEndpoint(String((local ? input.localBase : input.apiBase) ?? '')));
+  const baseField = local ? 'localBase' : 'apiBase', base = String((local ? input.localBase : input.apiBase) ?? '');
+  check(baseField, () => { apiEndpoint(base); if (!hostAllowed(base, input.allowedHosts)) throw new Error('公网明文地址需要先加入「允许的外部地址」。'); });
   const model = String((local ? input.localModel : input.model) ?? '').trim();
   if (!/^[\w.\/-]{1,80}$/.test(model)) errors[local ? 'localModel' : 'model'] = '模型名称无效。';
   check('hotkey', () => normalizeHotkey(input.hotkey ?? ''));
@@ -78,14 +116,14 @@ export function errorField(message, provider = 'jev') {
   const local = provider === 'local';
   if (/JEV 密钥|更换 API 服务|密钥格式/.test(message)) return 'apiKey';
   if (/授权|访问权限/.test(message)) return '';
-  if (/API 地址/.test(message)) return local ? 'localBase' : 'apiBase';
+  if (/API 地址|允许的外部地址/.test(message)) return local ? 'localBase' : 'apiBase';
   if (/模型名称/.test(message)) return local ? 'localModel' : 'model';
   if (/快捷键/.test(message)) return 'hotkey';
   if (/决策上限/.test(message)) return 'maxDecisions';
   if (/本局目标/.test(message)) return 'objective';
   return '';
 }
-export const publicSettings = s => ({provider:s.provider==='local'?'local':'jev', providerName:activeProvider(s).name, apiBase:s.apiBase, model:s.model, localBase:s.localBase??DEFAULTS.localBase, localModel:s.localModel??DEFAULTS.localModel, hasLocalKey:!!s.localKey, hotkey:s.hotkey, autoCamera:s.autoCamera, showOverlay:s.showOverlay??DEFAULTS.showOverlay, autoReport:s.autoReport!==false, maxDecisions:s.maxDecisions, objective:s.objective??'', language:s.language??DEFAULTS.language, hasKey:!!s.apiKey});
+export const publicSettings = s => ({provider:s.provider==='local'?'local':'jev', providerName:activeProvider(s).name, apiBase:s.apiBase, model:s.model, localBase:s.localBase??DEFAULTS.localBase, localModel:s.localModel??DEFAULTS.localModel, hasLocalKey:!!s.localKey, hotkey:s.hotkey, autoCamera:s.autoCamera, showOverlay:s.showOverlay??DEFAULTS.showOverlay, autoReport:s.autoReport!==false, allowedHosts:sanitizeAllowedHosts(s.allowedHosts), maxDecisions:s.maxDecisions, objective:s.objective??'', language:s.language??DEFAULTS.language, hasKey:!!s.apiKey});
 // For the extension's own popup only: the stored keys, so the form can show them masked.
 export const privateSettings = s => ({...publicSettings(s), apiKey:s.apiKey??'', localKey:s.localKey??''});
 export function prepareQuestions(body) {

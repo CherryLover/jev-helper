@@ -1,4 +1,4 @@
-import {DEFAULTS, supportedGame, apiEndpoint, originPattern, validateSettings, publicSettings, privateSettings, prepareQuestions, validateAnswer, httpError, activeProvider, authHeaders} from './shared.mjs';
+import {DEFAULTS, supportedGame, apiEndpoint, originPattern, validateSettings, publicSettings, privateSettings, prepareQuestions, validateAnswer, httpError, activeProvider, authHeaders, hostAllowed, normalizeHost, sanitizeAllowedHosts} from './shared.mjs';
 import {summarize,recordObservation} from './telemetry.mjs';
 import {LOG_KEY,appendEntries,decisionEntry,eventEntry,logStats} from './logbook.mjs';
 
@@ -156,6 +156,7 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
     const config=await getSettings(),provider=activeProvider(config);
     // URL and credentials are read exclusively from trusted extension settings.
     const endpoint=apiEndpoint(provider.apiBase);
+    if(!hostAllowed(provider.apiBase,config.allowedHosts))throw new Error('公网明文地址需要先加入「允许的外部地址」。');
     if(!await c.permissions.contains({origins:[originPattern(endpoint)]}))throw new Error('API 访问权限已被撤销，请重新保存设置。');
     try { await patch(tabId,s=>{
       if(!s?.running || s.token!==auth.token)throw new Error('托管会话已停止。');
@@ -272,6 +273,13 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
       const outcome=['victory','defeat',''].includes(message.outcome)?message.outcome:undefined;if(outcome===undefined)throw new Error('无效的对局结果。');
       let updated;await serial(stateLocks,'matches',async()=>{const list=await readMatches();updated=list.find(m=>m.id===message.id);if(!updated)return;updated.outcome=outcome;updated.outcomeMarked=!!outcome;await c.storage.local.set({matches:list});});
       if(!updated)throw new Error('未找到该场战绩。');return updated;
+    }
+    if(message.type==='ALLOW_HOST' || message.type==='DISALLOW_HOST'){
+      const host=normalizeHost(message.host),settings=await getSettings(),current=sanitizeAllowedHosts(settings.allowedHosts);
+      settings.allowedHosts=message.type==='ALLOW_HOST'?sanitizeAllowedHosts([...current,host]):current.filter(h=>h!==host);
+      if(message.type==='ALLOW_HOST' && !settings.allowedHosts.includes(host))throw new Error('允许列表已满（最多 32 条）。');
+      await c.storage.local.set({settings});
+      return {allowedHosts:settings.allowedHosts};
     }
     if(message.type==='SET_LANGUAGE' || message.type==='SET_OVERLAY' || message.type==='SET_AUTO_REPORT'){
       const settings=await getSettings();

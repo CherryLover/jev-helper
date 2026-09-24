@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Jev 对局托管</title><link rel="stylesheet" href="popup.css"></head>
 <body>
-<header><div class="brand-mark">J</div><div class="brand"><p class="eyebrow" data-i18n="brand">王二火大 · PLAYER AI</p><h1 data-i18n="title">Jev 对局托管</h1></div><div class="header-right"><button type="button" id="open-dashboard" class="dashboard-button" data-i18n="openDashboard">数据面板 ↗</button><div class="language" aria-label="Language / 语言"><button id="lang-zh" aria-pressed="true">中</button><button id="lang-en" aria-pressed="false">EN</button></div><span class="version">0.5.0</span></div></header>
+<header><div class="brand-mark">J</div><div class="brand"><p class="eyebrow" data-i18n="brand">王二火大 · PLAYER AI</p><h1 data-i18n="title">Jev 对局托管</h1></div><div class="header-right"><button type="button" id="open-dashboard" class="dashboard-button" data-i18n="openDashboard">数据面板 ↗</button><div class="language" aria-label="Language / 语言"><button id="lang-zh" aria-pressed="true">中</button><button id="lang-en" aria-pressed="false">EN</button></div><span class="version">0.5.1</span></div></header>
 <main>
 <section class="battle">
  <div class="status-line"><span id="dot" class="dot"></span><strong id="status" data-i18n="connecting">正在连接游戏…</strong><span id="tick" class="tick"></span></div>
@@ -44,10 +44,10 @@
  <div id="fields-jev" class="provider-fields">
  <label for="api-key" data-i18n="apiKey">JEV 密钥</label><div class="secret"><input id="api-key" name="api-key" type="password" autocomplete="off" spellcheck="false"><button type="button" class="eye" data-reveal="api-key" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5c-5 0-9 4-10 7 1 3 5 7 10 7s9-4 10-7c-1-3-5-7-10-7zm0 11.5a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9zm0-7a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z"/></svg></button></div><p class="field-error" id="err-api-key" role="alert" hidden></p>
  <button id="import-config" type="button" class="text-button import-button" data-i18n="import">从本地 .env 配置导入</button><input id="config-file" type="file" hidden>
- <label for="api-base" data-i18n="apiBase">API 地址</label><input id="api-base" type="url" spellcheck="false" required><p class="field-error" id="err-api-base" role="alert" hidden></p>
+ <label for="api-base" data-i18n="apiBase">API 地址</label><input id="api-base" type="url" spellcheck="false" required><p class="field-error" id="err-api-base" role="alert" hidden></p><p class="field-warning" id="warn-api-base" hidden></p>
  </div>
  <div id="fields-local" class="provider-fields" hidden>
- <label for="local-base" data-i18n="localBase">本地服务地址</label><input id="local-base" type="url" spellcheck="false" required><p class="field-error" id="err-local-base" role="alert" hidden></p>
+ <label for="local-base" data-i18n="localBase">本地服务地址</label><input id="local-base" type="url" spellcheck="false" required><p class="field-error" id="err-local-base" role="alert" hidden></p><p class="field-warning" id="warn-local-base" hidden></p>
  <p class="hint" data-i18n="startHint"></p>
  <label for="local-key" data-i18n="localKey">本地访问令牌（可选）</label><div class="secret"><input id="local-key" name="local-key" type="password" autocomplete="off" spellcheck="false"><button type="button" class="eye" data-reveal="local-key" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5c-5 0-9 4-10 7 1 3 5 7 10 7s9-4 10-7c-1-3-5-7-10-7zm0 11.5a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9zm0-7a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z"/></svg></button></div><p class="field-error" id="err-local-key" role="alert" hidden></p>
  </div>
@@ -57,6 +57,7 @@
  <label class="check"><input id="show-overlay" type="checkbox" aria-describedby="overlay-hint"><span data-i18n="showOverlay">托管时显示悬浮状态窗</span></label><p id="overlay-hint" class="hint" data-i18n="overlayHint"></p>
  <label class="check"><input id="auto-report" type="checkbox" aria-describedby="report-hint"><span data-i18n="autoReport">对局结束后自动保存战报</span></label><p id="report-hint" class="hint" data-i18n="autoReportHint"></p>
  <details><summary data-i18n="advanced">更多设置</summary><div class="advanced"><div class="provider-fields" id="advanced-jev"><label for="model" data-i18n="model">Jev 模型</label><input id="model" spellcheck="false"><p class="field-error" id="err-model" role="alert" hidden></p></div><div class="provider-fields" id="advanced-local" hidden><label for="local-model" data-i18n="localModel">本地模型名称</label><input id="local-model" spellcheck="false"><p class="field-error" id="err-local-model" role="alert" hidden></p><p class="hint" data-i18n="localModelHint"></p></div><label for="budget" data-i18n="budget">每局决策请求上限</label><input id="budget" type="number" min="1" max="10000"><p class="field-error" id="err-budget" role="alert" hidden></p><p class="hint" data-i18n="budgetHint"></p></div></details>
+ <details id="allowed-hosts-box"><summary data-i18n="allowedHosts">允许的外部地址</summary><div class="advanced"><p class="hint" data-i18n="allowedHostsHint"></p><ul id="allowed-hosts" class="chips"></ul><div class="allow-row"><input id="allow-host" spellcheck="false" autocomplete="off"><button type="button" id="allow-host-add" data-i18n="allowHost">允许</button></div><p class="field-error" id="err-allow-host" role="alert" hidden></p></div></details>
  <button class="save" id="save" type="submit" data-i18n="save">保存设置</button><button class="save test" id="test-connection" type="button" data-state="idle"><span class="spinner" aria-hidden="true"></span><span id="test-label" data-i18n="test">测试模型连接</span></button><p class="privacy" data-i18n="privacy"></p>
 </form>
 </section>

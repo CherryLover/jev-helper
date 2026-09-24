@@ -311,3 +311,16 @@ test('the history keeps at most 100 matches and drops the oldest logs with their
   assert.equal(list.matches.length,100);assert.equal(list.matches.at(-1).id,'old-1','the oldest record was dropped');
   assert.equal(x.data.local['matchlog:old-0'],undefined,'its log went with it');assert.ok(x.data.local['matchlog:old-1']);
 });
+
+test('external hosts are allowed by hand: until then a public plaintext address is refused, afterwards it is used',async()=>{
+  const x=mockChrome({local:{settings:{...DEFAULTS}},session:{}});
+  const app=createBackground(x.c,{fetchImpl:async()=>answer()});
+  await assert.rejects(app.handle({type:'SAVE_SETTINGS',settings:{provider:'local',localBase:'http://vps.example:8742/v1'}},extension),/允许的外部地址/);
+  await assert.rejects(app.handle({type:'ALLOW_HOST',host:'vps.example'},sender));
+  const allowed=await app.handle({type:'ALLOW_HOST',host:' HTTP://VPS.example:8742/v1 '},extension);assert.deepEqual(allowed.allowedHosts,['vps.example']);
+  const saved=await app.handle({type:'SAVE_SETTINGS',settings:{provider:'local',localBase:'http://vps.example:8742/v1'}},extension);assert.deepEqual(saved.allowedHosts,['vps.example']);
+  await app.handle({type:'START',tabId:7},extension);assert.equal((await app.getSession(7)).running,true);
+  await app.handle({type:'DISALLOW_HOST',host:'vps.example'},extension);
+  const s=await app.getSession(7);await assert.rejects(app.handle({type:'DECIDE',token:s.token,body},sender),/允许的外部地址/,'a removed host stops being used at once');
+  assert.deepEqual((await app.handle({type:'GET_SETTINGS'},extension)).allowedHosts,[]);
+});

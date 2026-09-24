@@ -111,8 +111,10 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
     await badge(tabId,'');
     return {running:false,reason};
   }
+  // The extension's own pages: the popup (no tab) and the data panel (opened in a tab). Content
+  // scripts carry the game page's URL and never pass; the URL check is what matters, not the tab.
   function trustExtension(sender) {
-    return !sender.tab && sender.id === c.runtime.id && sender.url?.startsWith(c.runtime.getURL(''));
+    return sender.id === c.runtime.id && typeof sender.url === 'string' && sender.url.startsWith(c.runtime.getURL('')) && (sender.frameId ?? 0) === 0;
   }
   async function authorize(sender, token) {
     if(sender.id!==c.runtime.id || sender.frameId!==0 || !sender.tab || !supportedGame(sender.url))throw new Error('不接受此页面的请求。');

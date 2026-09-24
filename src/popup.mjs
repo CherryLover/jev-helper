@@ -1,4 +1,4 @@
-import {DEFAULTS,validateSettings,originPattern,hotkeyFromEvent,fieldErrors,errorField,plaintextPublic,normalizeHost} from './shared.mjs';
+import {DEFAULTS,validateSettings,originPattern,hotkeyFromEvent,fieldErrors,errorField,plaintextPublic,normalizeHost,PROVIDER_FIELDS} from './shared.mjs';
 import {importSettings} from './import-settings.mjs';
 import {t,errorText,messages,officialWebsiteUrl} from './i18n.mjs';
 import {drawChart,drawPositions} from './charts.mjs';
@@ -6,9 +6,10 @@ const $=id=>document.getElementById(id);
 let tabId,config={...DEFAULTS,hasKey:false},lastStatus,dirty=false,refreshing=false,activePanel='battlefield',noticeState;
 const tr=(key,vars)=>t(config.language,key,vars);
 const providerName=()=>config.providerName||'Jev';
-let testState={state:'idle'};
+let testState={state:'idle'},models=[];
 // Inline field errors (Material style): red outline plus a message under the input.
-const FIELD_IDS={apiKey:'api-key',apiBase:'api-base',model:'model',localKey:'local-key',localBase:'local-base',localModel:'local-model',hotkey:'hotkey',maxDecisions:'budget',objective:'objective'};
+const FIELD_IDS={apiKey:'api-key',apiBase:'api-base',model:'model',localKey:'local-key',localBase:'local-base',localModel:'local-model',openaiKey:'openai-key',openaiBase:'openai-base',openaiModel:'openai-model',hotkey:'hotkey',maxDecisions:'budget',objective:'objective'};
+const PROVIDER_IDS=['jev','local','openai'],KEY_FLAGS={jev:'hasKey',local:'hasLocalKey',openai:'hasOpenaiKey'};
 const fieldMessages={};
 function fieldError(field,message){
  const id=FIELD_IDS[field];if(!id)return false;const input=$(id),slot=$(`err-${id}`);
@@ -55,15 +56,15 @@ async function allowHost(){
  try{
   try{await chrome.permissions.request({origins:[`*://${host}/*`]});}catch{}
   config={...config,...await rpc({type:'ALLOW_HOST',host})};input.value='';renderAllowedHosts();notify('hostAllowed',true,{host});
-  clearFieldError('localBase');clearFieldError('apiBase');
+  clearFieldError('localBase');clearFieldError('apiBase');clearFieldError('openaiBase');
  }catch(e){notice(e.message);}finally{$('allow-host-add').disabled=false;}
 }
 // Plain HTTP to a public address is allowed but flagged under the field; private networks stay quiet.
-function renderPlaintextWarnings(){for(const id of ['api-base','local-base']){const warn=$(`warn-${id}`),show=plaintextPublic($(id).value);warn.hidden=!show;if(show)warn.textContent=tr('plaintextWarning');}}
+function renderPlaintextWarnings(){for(const id of ['api-base','local-base','openai-base']){const warn=$(`warn-${id}`),show=plaintextPublic($(id).value);warn.hidden=!show;if(show)warn.textContent=tr('plaintextWarning');}}
 function openSettingsPanel(){for(const other of document.querySelectorAll('[data-panel]')){const on=other.dataset.panel==='settings';other.setAttribute('aria-pressed',on);$(`panel-${other.dataset.panel}`).hidden=!on;}activePanel='settings';}
 // The connection probe reports on its own button: testing → ok / fail. Any edit resets it.
 function showTest(state,key,vars){testState={state,key,vars};const btn=$('test-connection');btn.dataset.state=state;btn.disabled=state==='testing';$('test-label').textContent=tr(key??'test',vars);}
-const selectedProvider=()=>$('provider-local').getAttribute('aria-checked')==='true'?'local':'jev';
+const selectedProvider=()=>document.querySelector('[data-provider][aria-checked="true"]')?.dataset.provider??'jev';
 const rpc=async message=>{const r=await chrome.runtime.sendMessage(message);if(!r?.ok)throw new Error(r?.error||'插件后台未响应。');return r.value;};
 const format=n=>typeof n==='number'&&Number.isFinite(n)?Math.round(n).toLocaleString(config.language):'—';
 function notice(text,success=false,key,vars){noticeState={text,success,key,vars};$('notice').textContent=key?tr(key,vars):errorText(config.language,text);$('notice').classList.toggle('success',success);$('notice').hidden=!text&&!key;}
@@ -82,16 +83,40 @@ function translate(){
  renderPermission();
  if(lastStatus)displayStatus(lastStatus);
 }
-function keyPlaceholder(){$('api-key').placeholder=tr('keyEmpty');$('local-key').placeholder=tr('localKeyEmpty');$('clear-key').hidden=!(selectedProvider()==='local'?config.hasLocalKey:config.hasKey);}
+function keyPlaceholder(){$('api-key').placeholder=tr('keyEmpty');$('local-key').placeholder=tr('localKeyEmpty');$('openai-key').placeholder=tr('openaiKeyEmpty');$('clear-key').hidden=!config[KEY_FLAGS[selectedProvider()]];renderModels($('openai-model').value);}
 // Only the selected source's fields are shown; both sets stay saved.
 function showProvider(provider){
  for(const btn of document.querySelectorAll('[data-provider]'))btn.setAttribute('aria-checked',btn.dataset.provider===provider);
- for(const id of ['jev','local']){$(`fields-${id}`).hidden=id!==provider;$(`advanced-${id}`).hidden=id!==provider;}
- $('provider-hint').textContent=tr(provider==='local'?'providerLocalHint':'providerJevHint');
- $('clear-key').hidden=!(provider==='local'?config.hasLocalKey:config.hasKey);
+ for(const id of PROVIDER_IDS){$(`fields-${id}`).hidden=id!==provider;$(`advanced-${id}`).hidden=id!==provider;}
+ $('provider-hint').textContent=tr({local:'providerLocalHint',openai:'providerOpenaiHint'}[provider]??'providerJevHint');
+ $('clear-key').hidden=!config[KEY_FLAGS[provider]];
+}
+// The OpenAI model is picked from the service's own list; the saved choice stays selectable even before a reload.
+function renderModels(selected){
+ const select=$('openai-model'),ids=[...new Set([...models,...(selected?[selected]:[])])];
+ const option=(value,text)=>{const o=document.createElement('option');o.value=value;o.textContent=text;return o;};
+ select.replaceChildren(...(ids.length?ids.map(id=>option(id,id)):[option('',tr('modelPlaceholder'))]));
+ select.value=selected&&ids.includes(selected)?selected:ids[0]??'';
+}
+async function fetchModels(){
+ const base=$('openai-base').value.trim(),apiKey=$('openai-key').value.trim(),btn=$('fetch-models');
+ clearFieldError('openaiBase');clearFieldError('openaiModel');
+ const errors=fieldErrors({provider:'openai',openaiBase:base,openaiKey:apiKey,openaiModel:'',allowedHosts:config.allowedHosts,hotkey:config.hotkey,maxDecisions:1});
+ if(errors.openaiBase){showFieldErrors({openaiBase:errors.openaiBase});return;}
+ btn.disabled=true;btn.textContent=tr('modelsLoading');
+ try{
+  // Access to that address is asked for here, inside the click, so the list can load before saving.
+  try{await chrome.permissions.request({origins:[originPattern(base)]});}catch{}
+  const result=await rpc({type:'LIST_MODELS',base,apiKey});
+  const before=$('openai-model').value;models=result.models;renderModels(before||config.openaiModel);
+  if($('openai-model').value!==config.openaiModel||base!==config.openaiBase){dirty=true;if(testState.state!=='idle')showTest('idle');if(lastStatus)displayStatus(lastStatus);}
+  $('models-hint').textContent=tr('modelsLoaded',{n:result.models.length});
+ }catch(e){const field=errorField(e.message,'openai');if(/授权|访问权限/.test(e.message))notice(e.message);else{fieldError(field||'openaiModel',e.message);$(FIELD_IDS[field||'openaiModel']).focus();}}
+ finally{btn.disabled=false;btn.textContent=tr('fetchModels');}
 }
 function displayConfig(){
  $('api-base').value=config.apiBase;$('model').value=config.model;$('local-base').value=config.localBase;$('local-model').value=config.localModel;
+ $('openai-base').value=config.openaiBase??DEFAULTS.openaiBase;$('openai-key').value=config.openaiKey??'';$('openai-mode').value=config.openaiMode==='json'?'json':'tools';models=config.openaiModels??[];renderModels(config.openaiModel);
  // Stored keys are shown masked; the eye button reveals them on demand.
  $('api-key').value=config.apiKey??'';$('local-key').value=config.localKey??'';$('objective').value=config.objective??'';showProvider(config.provider);renderPlaintextWarnings();renderAllowedHosts();$('hotkey').value=config.hotkey;$('budget').value=config.maxDecisions;$('auto-camera').checked=config.autoCamera;$('show-overlay').checked=config.showOverlay;$('auto-report').checked=config.autoReport!==false;keyPlaceholder();
 }
@@ -160,6 +185,7 @@ $('config-file').addEventListener('change',async()=>{
 $('test-connection').addEventListener('click',async()=>{
  if(dirty){showTest('fail','saveFirst');return;}
  if(selectedProvider()==='jev'&&!$('api-key').value.trim()){showFieldErrors({apiKey:'请输入 JEV 密钥。'});return;}
+ if(selectedProvider()==='openai'&&!$('openai-model').value){showFieldErrors({openaiModel:'请先获取模型列表并选择模型。'});return;}
  notice('');showTest('testing','testing',{name:providerName()});
  try{const result=await rpc({type:'TEST_CONNECTION'});showTest('ok','testOk',{name:result.providerName||providerName(),ms:result.latencyMs,model:result.model?` · ${result.model}`:''});}
  catch(e){showTest('idle');if(!reportError(e.message))showTest('fail','testFail',{error:errorText(config.language,e.message)});}
@@ -180,9 +206,9 @@ $('hotkey').addEventListener('keydown',e=>{if(e.key==='Tab')return;e.preventDefa
 $('settings').addEventListener('submit',async e=>{
  e.preventDefault();
  try{
-  const input={language:config.language,provider:selectedProvider(),apiKey:$('api-key').value.trim(),apiBase:$('api-base').value.trim(),model:$('model').value.trim(),localKey:$('local-key').value.trim(),localBase:$('local-base').value.trim(),localModel:$('local-model').value.trim(),hotkey:$('hotkey').value,autoCamera:$('auto-camera').checked,showOverlay:$('show-overlay').checked,maxDecisions:$('budget').value.trim()===''?NaN:Number($('budget').value),objective:$('objective').value};
+  const input={language:config.language,provider:selectedProvider(),apiKey:$('api-key').value.trim(),apiBase:$('api-base').value.trim(),model:$('model').value.trim(),localKey:$('local-key').value.trim(),localBase:$('local-base').value.trim(),localModel:$('local-model').value.trim(),openaiKey:$('openai-key').value.trim(),openaiBase:$('openai-base').value.trim(),openaiModel:$('openai-model').value,openaiMode:$('openai-mode').value,openaiModels:models,hotkey:$('hotkey').value,autoCamera:$('auto-camera').checked,showOverlay:$('show-overlay').checked,maxDecisions:$('budget').value.trim()===''?NaN:Number($('budget').value),objective:$('objective').value};
   input.allowedHosts=config.allowedHosts??[];
-  clearFieldErrors();if(showFieldErrors(fieldErrors(input,{requireKey:true}))){if(fieldMessages.localBase?.includes('允许')||fieldMessages.apiBase?.includes('允许'))$('allowed-hosts-box').open=true;return;}
+  clearFieldErrors();if(showFieldErrors(fieldErrors(input,{requireKey:true}))){if(['localBase','apiBase','openaiBase'].some(f=>fieldMessages[f]?.includes('允许')))$('allowed-hosts-box').open=true;return;}
   validateSettings(input);
   config=await rpc({type:'SAVE_SETTINGS',settings:input});dirty=false;displayConfig();
   if(!config.permitted){
@@ -194,9 +220,10 @@ $('settings').addEventListener('submit',async e=>{
  }catch(error){reportError(error.message);}
 });
 $('authorize').addEventListener('click',authorize);
+$('fetch-models').addEventListener('click',fetchModels);
 $('allow-host-add').addEventListener('click',allowHost);$('allow-host').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();allowHost();}});$('allow-host').addEventListener('input',()=>{$('err-allow-host').hidden=true;$('allow-host').classList.remove('invalid');});
 $('open-dashboard').addEventListener('click',()=>chrome.tabs.create({url:chrome.runtime.getURL('dashboard.html')}));
-$('clear-key').addEventListener('click',async()=>{try{const provider=selectedProvider();await rpc({type:'CLEAR_KEY',provider});if(provider==='local'){config.hasLocalKey=false;config.localKey='';$('local-key').value='';}else{config.hasKey=false;config.apiKey='';$('api-key').value='';}keyPlaceholder();notify('keyCleared',true);await refresh();}catch(e){notice(e.message);}});
+$('clear-key').addEventListener('click',async()=>{try{const provider=selectedProvider(),field=PROVIDER_FIELDS[provider].key;await rpc({type:'CLEAR_KEY',provider});config[KEY_FLAGS[provider]]=false;config[field]='';$(FIELD_IDS[field]).value='';keyPlaceholder();notify('keyCleared',true);await refresh();}catch(e){notice(e.message);}});
 for(const [id,type]of [['start','START'],['stop','STOP']])$(id).addEventListener('click',async()=>{
  $(id).disabled=true;notice('');try{await rpc({type,tabId});await refresh();}catch(e){if(reportError(e.message))openSettingsPanel();$(id).disabled=false;}
 });

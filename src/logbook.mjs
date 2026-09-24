@@ -34,9 +34,10 @@ export function decisionEntry({ at, tick, provider, model, latencyMs, usage, sta
       optionCount: Object.keys(q.criteria ?? {}).length,
       choice: short(a?.choice, 60), confidence: number(a?.confidence),
       probabilities: Object.fromEntries(Object.entries(a?.probabilities ?? {}).sort(([, x], [, y]) => y - x).slice(0, 8).map(([k, v]) => [short(k, 60), Math.round(v * 1000) / 1000])),
+      ...(a?.reason ? { reason: short(a.reason, 200) } : {}), ...(a?.fallback ? { fallback: true } : {}),
     };
   }
-  return { at, kind: 'decision', tick: number(tick), provider: short(provider, 12), model: short(model, 60), latencyMs: number(latencyMs), inputTokens: number(usage?.input_tokens), state: stateSummary(state), groups };
+  return { at, kind: 'decision', tick: number(tick), provider: short(provider, 12), model: short(model, 60), latencyMs: number(latencyMs), inputTokens: number(usage?.input_tokens), outputTokens: number(usage?.output_tokens), state: stateSummary(state), groups };
 }
 
 export function eventEntry(e, at) {
@@ -65,7 +66,7 @@ const top = (map, n = 8) => Object.fromEntries(Object.entries(map).sort(([, a], 
 
 // Aggregate view for the popup and the export file.
 export function logStats(entries = []) {
-  const s = { entries: entries.length, from: null, to: null, sessions: 0, decisions: 0, failures: 0, stale: 0, latency: { avg: null, max: null }, providers: {}, models: {},
+  const s = { entries: entries.length, from: null, to: null, sessions: 0, decisions: 0, failures: 0, stale: 0, latency: { avg: null, max: null }, usage: { inputTokens: 0, outputTokens: 0 }, fallbacks: 0, providers: {}, models: {},
     groups: {}, actions: { total: 0, accepted: 0, skipped: 0, waits: 0, byType: {}, skippedReasons: {}, acceptedProduce: {} }, outcomes: {}, errors: 0 };
   let latencySum = 0, latencyCount = 0;
   for (const e of entries) {
@@ -78,11 +79,12 @@ export function logStats(entries = []) {
     else if (e.kind === 'outcome') inc(s.outcomes, e.result || 'unknown');
     else if (e.kind === 'decision') {
       s.decisions++; if (e.provider) inc(s.providers, e.provider); if (e.model) inc(s.models, e.model);
+      s.usage.inputTokens += e.inputTokens ?? 0; s.usage.outputTokens += e.outputTokens ?? 0;
       if (e.latencyMs !== null) { latencySum += e.latencyMs; latencyCount++; s.latency.max = Math.max(s.latency.max ?? 0, e.latencyMs); }
       for (const [id, g] of Object.entries(e.groups ?? {})) {
         const stat = s.groups[id] ??= { asked: 0, waits: 0, avgOptions: 0, avgConfidence: 0, choices: {} };
         stat.asked++; stat.avgOptions += g.optionCount ?? 0; stat.avgConfidence += g.confidence ?? 0;
-        if (g.choice === 'wait') stat.waits++; inc(stat.choices, g.choice || '?');
+        if (g.choice === 'wait') stat.waits++; inc(stat.choices, g.choice || '?'); if (g.fallback) s.fallbacks++;
       }
     } else if (e.kind === 'action') {
       s.actions.total++;

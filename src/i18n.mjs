@@ -45,7 +45,7 @@ export const messages = {
  matchesEmpty:['还没有战绩。托管结束后会自动出现。','No results yet. A record appears when autopilot ends.'],matchDuration:['对局时长','Duration'],matchCreditsEnd:['结束资金','Final credits'],
  matchExport:['导出这场 JSON','Export this match'],matchesClear:['清空战绩','Clear results'],matchExported:['已导出 {file}。','Exported {file}.'],matchesCleared:['战绩已清空。','Results cleared.'],
  matchOutcome_victory:['胜利','Victory'],matchOutcome_defeat:['战败','Defeat'],matchOutcome_observer:['观察者','Observer'],matchOutcome_:['未分胜负','No result'],
- matchFacts:['{provider} · {model} · 请求 {requests} 次 · 失败 {failures} · 平均响应 {avg} ms · 游戏内 {game}','{provider} · {model} · {requests} requests · {failures} failed · avg {avg} ms · in-game {game}'],
+ matchFacts:['请求 {requests} 次 · 失败 {failures} · 平均响应 {avg} ms · 游戏内 {game}','{requests} requests · {failures} failed · avg {avg} ms · in-game {game}'],
  matchActions:['动作：受理 {accepted} · 等待 {waits} · 部队峰值 {army} · 资金 {start} → {end}（峰值 {max}）','Actions: accepted {accepted} · wait {waits} · peak army {army} · credits {start} → {end} (peak {max})'],
  matchReason:['结束原因：{reason}','Ended: {reason}'],matchObjective:['本局目标：{objective}','Objective: {objective}'],matchGroups:['各决策组等待率：{list}','Wait rate per group: {list}'],
  logTitle:['决策日志','Decision log'],logHint:['本机保存模型的每次问答、执行结果和异常（不含密钥和原始战况），最多约 2000 条，用于事后分析。','Stored locally: every model question and answer, execution result and failure (no keys, no raw state), up to about 2,000 entries, for later analysis.'],
@@ -59,7 +59,17 @@ export const messages = {
  allowedHosts:['允许的外部地址','Allowed external addresses'],allowedHostsHint:['本机与局域网、Tailscale 等私有网络地址默认可用，https 地址也可直接用。其他 IP 或域名走明文 http 时，先在这里添加（会申请一次该地址的访问权），之后才能填到上面的地址栏。','This machine, LAN, Tailscale and other private-network addresses work by default, as do https addresses. Any other IP or hostname over plain http must be added here first (one access request for that address) before it can be used above.'],
  allowHost:['允许','Allow'],allowHostPlaceholder:['例如 203.0.113.5 或 laya.example.com','e.g. 203.0.113.5 or laya.example.com'],hostAllowed:['已允许 {host}。','{host} allowed.'],hostRemoved:['已移除 {host}。','{host} removed.'],removeHost:['移除','Remove'],
  plaintextWarning:['这是公网地址且使用明文 HTTP，密钥 / 令牌会明文传输。局域网、Tailscale 等私有网络不受影响；公网请尽量用 HTTPS。','Public address over plain HTTP: the key / token travels unencrypted. Private networks such as LAN or Tailscale are fine; prefer HTTPS on the public internet.'],
- providerLabel:['模型来源','Model source'],providerJev:['Jev 云端','Jev cloud'],providerLocal:['本地 Laya','Local Laya'],
+ providerLabel:['模型来源','Model source'],providerJev:['Jev 云端','Jev cloud'],providerLocal:['本地 Laya','Local Laya'],providerOpenai:['OpenAI 兼容','OpenAI-compatible'],
+ providerOpenaiHint:['任意 OpenAI 格式的模型服务（OpenAI、各类中转、DeepSeek、通义、Ollama、LM Studio 等）。模型用函数调用或 JSON 从同一组候选里选择；每次请求都会带上战况，按服务的 Token 计费。','Any OpenAI-format model service (OpenAI, relays, DeepSeek, Qwen, Ollama, LM Studio…). The model picks from the same options via function calling or JSON. Every request carries the battlefield state and is billed by the service per token.'],
+ openaiKey:['API 密钥','API key'],openaiKeyEmpty:['输入该服务的 API key；本机或局域网服务可留空','Enter the service API key; may be blank for a local or LAN service'],
+ openaiModel:['模型','Model'],fetchModels:['获取模型列表','Load models'],modelsLoading:['正在获取…','Loading…'],modelsLoaded:['已获取 {n} 个模型，请选择一个后保存。','{n} models loaded. Pick one, then save.'],
+ modelPlaceholder:['先点「获取模型列表」','Click “Load models” first'],modelsHint:['模型列表来自该服务的 /models 接口。填好地址和密钥后点获取。','The list comes from the service’s /models endpoint. Enter the URL and key, then load it.'],
+ openaiMode:['调用方式','Call style'],modeTools:['函数调用（tool call，推荐）','Function calling (tool call, recommended)'],modeJson:['JSON 输出（不支持函数调用时用）','JSON output (when function calling is unsupported)'],
+ openaiModeHint:['两种方式都只允许从给出的候选里选。选错或缺项的组按「等待」处理，并在日志里标记。','Both only allow the offered options. A missing or unknown choice counts as “wait” and is flagged in the log.'],
+ kind_cloud:['云端','Cloud'],kind_local:['本地','Local'],callMode_tools:['函数调用','function calling'],callMode_json:['JSON 输出','JSON output'],
+ matchModelInfo:['模型：{kind} · {provider} · {model}{mode}','Model: {kind} · {provider} · {model}{mode}'],matchEndpoint:['请求地址：{endpoint}','Endpoint: {endpoint}'],
+ matchTokens:['Token：输入 {input} · 输出 {output} · 合计 {total}（每次决策平均 {avg}）','Tokens: input {input} · output {output} · total {total} (avg {avg} per decision)'],
+ summaryTokens:['共 {n} Token','{n} tokens in total'],colTokens:['Token','Tokens'],
  providerJevHint:['TypeSafe 托管的 Jev 模型，需要 JEV 密钥，按请求计费。','TypeSafe-hosted Jev. Needs a JEV key; billed per request.'],
  providerLocalHint:['本机运行的 Laya 模型（MLX）。先启动本地服务，再保存并测试连接；不产生 API 费用。','Laya running on this Mac (MLX). Start the local server first, then save and test. No API fees.'],
  localBase:['本地服务地址','Local server URL'],localKey:['本地访问令牌（可选）','Local access token (optional)'],localKeySaved:['已保存','Saved'],localKeyEmpty:['本地服务未设置令牌时留空','Leave blank unless the local server requires a token'],
@@ -73,7 +83,7 @@ export const messages = {
  event_start:['开始托管','Autopilot started'],event_stop:['停止托管','Autopilot stopped'],event_action:['决策动作','Decision action'],event_place:['放置建筑','Place structure'],event_camera:['镜头移动','Camera moved'],event_micro:['战术指令','Tactical command'],event_error:['执行异常','Execution error'],event_stale:['战况过期，跳过','Stale state; skipped'],event_outcome:['对局结束','Match ended'],event_other:['状态更新','Status update'],
  acceptedLabel:['已受理','Accepted'],skippedLabel:['未执行','Skipped'],waitLabel:['等待','Wait'],
  helpTitle:['把当前对局交给 Jev。','Let Jev play your WannaFire match.'],helpIntro:['先开始一场游戏，再点击「开启托管」。无需本地服务器或开发者控制台。','Start a match, then select Start autopilot. No local server or developer console needed.'],
- help1:['在设置中选择模型来源。Jev 云端需填写 JEV 密钥，也可从本地 .env 导入，默认 API 为 https://api.typesafe.ai/v1；本地 Laya 需先在 jev-helper 目录运行 npm run laya 启动本地服务（默认 http://127.0.0.1:8742/v1），无需密钥。自定义服务须实现 /systemone 候选选择协议。','Choose a model source in Settings. Jev cloud needs a JEV key (or import a local .env file); the default API is https://api.typesafe.ai/v1. Local Laya needs the local server started with npm run laya in the jev-helper directory (default http://127.0.0.1:8742/v1) and no key. Custom services must support the /systemone choice protocol.'],
+ help1:['在设置中选择模型来源。Jev 云端需填写 JEV 密钥，也可从本地 .env 导入，默认 API 为 https://api.typesafe.ai/v1；本地 Laya 需先在 jev-helper 目录运行 npm run laya 启动本地服务（默认 http://127.0.0.1:8742/v1），无需密钥。OpenAI 兼容：填写服务地址（例如 https://api.openai.com/v1）和密钥，点「获取模型列表」选择模型。','Choose a model source in Settings. Jev cloud needs a JEV key (or import a local .env file); the default API is https://api.typesafe.ai/v1. Local Laya needs the local server started with npm run laya in the jev-helper directory (default http://127.0.0.1:8742/v1) and no key. OpenAI-compatible: enter the service URL (e.g. https://api.openai.com/v1) and key, then click “Load models” and pick one.'],
  help2:['点击快捷键输入框，按下组合键并保存。默认 Alt+Shift+J，只在游戏页面拥有焦点、且未在输入文字时生效。','Record and save your shortcut. Alt+Shift+J is the default. It works when the game has focus and you are not typing in a field.'],
  help3:['进入在线对局后，点击开启托管或使用快捷键。停止按钮或同一快捷键可交还控制。关闭弹窗不会停止托管。','Enter an online match and start via the popup or shortcut. Stop or press the same shortcut to take back control. Closing the popup does not stop autopilot.'],
  help4:['离开对局、战败、达到请求上限或认证 / 计费错误会停止托管；不会自动接管下一局。','Autopilot stops on leaving the match, defeat, the request limit, or authentication/billing errors. It never takes over the next match automatically.'],
@@ -98,6 +108,13 @@ const errors = {
  '请先切换到王二火大的游戏标签页。':'Switch to the WannaFire game tab first.',
  '请先填写并保存 JEV 密钥。':'Enter and save your JEV key first.',
  '请输入 JEV 密钥。':'Enter your JEV API key.',
+ '请输入 API 密钥。':'Enter the API key.',
+ '请先填写并保存 API 密钥。':'Enter and save the API key first.',
+ '请先获取模型列表并选择模型。':'Load the model list and pick a model first.',
+ '模型列表为空，请确认该服务支持 /models 接口。':'The model list is empty. Check that the service supports /models.',
+ '获取模型列表失败，请检查地址、密钥和网络。':'Could not load models. Check the URL, key and network.',
+ '获取模型列表超时。':'Loading the model list timed out.',
+ 'Jev 返回的内容无法解析。':'Jev returned a reply that could not be parsed.',
  '公网明文地址需要先加入「允许的外部地址」。':'A public address over plain HTTP must first be added to “Allowed external addresses”.',
  '请输入地址。':'Enter an address.',
  '请输入有效的地址。':'Enter a valid address.',
@@ -131,7 +148,7 @@ const errors = {
 };
 export function errorText(language,message){
  if(language!=='en')return message;
- const name=message?.match(/^(Jev|Laya)\b/)?.[1]??'Jev',normalized=name==='Jev'?message:message.replace(name,'Jev');
+ const name=message?.match(/^(Jev|Laya|OpenAI)\b/)?.[1]??'Jev',normalized=name==='Jev'?message:message.replace(name,'Jev');
  if(errors[normalized])return errors[normalized].replace(/\bJev\b/g,name);
  const http=message?.match(/HTTP (\d{3})/);
  if(http){const code=http[1];return `${name} HTTP ${code}: `+({'401':'check your API key.','402':'check your account balance or billing.','403':'check key permissions and the API URL.','429':'rate or quota limit reached. Try again later.'}[code]??'request failed.');}

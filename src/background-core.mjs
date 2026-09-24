@@ -1,4 +1,5 @@
-import {DEFAULTS, supportedGame, apiEndpoint, originPattern, validateSettings, publicSettings, privateSettings, prepareQuestions, validateAnswer, httpError, activeProvider, authHeaders, hostAllowed, normalizeHost, sanitizeAllowedHosts} from './shared.mjs';
+import {DEFAULTS, supportedGame, apiEndpoint, originPattern, validateSettings, publicSettings, privateSettings, prepareQuestions, validateAnswer, httpError, activeProvider, authHeaders, hostAllowed, normalizeHost, sanitizeAllowedHosts, providerEndpoint, serviceUrl, PROVIDER_FIELDS} from './shared.mjs';
+import {buildChatRequest, parseChatResponse, modelIds, serviceError} from './openai.mjs';
 import {summarize,recordObservation} from './telemetry.mjs';
 import {LOG_KEY,appendEntries,decisionEntry,eventEntry,logStats} from './logbook.mjs';
 
@@ -10,6 +11,21 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
     c.storage.session.setAccessLevel({accessLevel:'TRUSTED_CONTEXTS'}),
   ]);
   const key = tabId => `session:${tabId}`;
+  // Chat models answer in seconds rather than milliseconds (reasoning models 10–25 s), so they get
+  // a longer budget; the page is told to wait a little longer than the background does.
+  const timeoutFor = provider => provider.id==='openai'?30000:8000;
+  // One decision request to whichever provider is selected, returned in Jev's answer shape.
+  async function callModel(provider,{state,questions},signal){
+    const openai=provider.id==='openai';
+    const body=openai?buildChatRequest({model:provider.model,mode:provider.mode,state,questions}):{model:provider.model,state,questions};
+    const response=await fetchImpl(providerEndpoint(provider),{method:'POST',headers:authHeaders(provider),body:JSON.stringify(body),signal,redirect:'error',credentials:'omit',referrerPolicy:'no-referrer'});
+    const raw=await response.text();
+    if(!response.ok){const detail=openai?serviceError(raw):'';const error=new Error(httpError(response.status,provider.name)+(detail?` ${detail}`:''));error.status=response.status;throw error;}
+    if(raw.length>(openai?512000:256000))throw new Error(`${provider.name} 响应过大，已拒绝处理。`);
+    let parsed;try{parsed=JSON.parse(raw);}catch{throw new Error(`${provider.name} 返回的内容无法解析。`);}
+    return openai?parseChatResponse(parsed,questions,provider.name):validateAnswer(parsed,questions,provider.name);
+  }
+  const needsModel = provider => provider.id==='openai' && !provider.model;
   // Decision log: buffered in memory, flushed in batches so frequent events do not rewrite storage each time.
   let pending=[],flushTimer;
   async function flushLog(){
@@ -51,8 +67,8 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
     const credits=history.map(p=>p.credits).filter(Number.isFinite),seconds=history.map(p=>p.gameSeconds).filter(Number.isFinite);
     const settings=await getSettings();
     const record={id:`${s.startedAt}-${tabId}-${String(s.token??'').slice(0,8)}`,startedAt:s.startedAt,endedAt:at,durationMs:at-s.startedAt,gameSeconds:seconds.length?Math.max(0,seconds.at(-1)-seconds[0]):null,
-      firstTick:s.firstTick??null,lastTick:s.lastTick??null,provider:s.provider??'jev',providerName:s.providerName??'Jev',model:s.model??'',objective:settings.objective??'',reason:String(reason??'').slice(0,40),outcome:s.outcome||(reason==='battle_ended'?'ended':''),ledger,
-      decisions:s.decisions??0,requests:s.requests??0,failures:s.failures??0,acceptedActions:s.acceptedActions??0,waits:s.waits??0,inputTokens:s.inputTokens??0,latencyAvg:stats.latency.avg,latencyMax:stats.latency.max,
+      firstTick:s.firstTick??null,lastTick:s.lastTick??null,provider:s.provider??'jev',providerName:s.providerName??'Jev',providerKind:s.providerKind??(s.provider==='local'?'local':'cloud'),model:s.model??'',configuredModel:s.configuredModel??'',endpoint:s.endpoint??'',callMode:s.callMode??'',objective:settings.objective??'',reason:String(reason??'').slice(0,40),outcome:s.outcome||(reason==='battle_ended'?'ended':''),ledger,
+      decisions:s.decisions??0,requests:s.requests??0,failures:s.failures??0,acceptedActions:s.acceptedActions??0,waits:s.waits??0,inputTokens:s.inputTokens??0,outputTokens:s.outputTokens??0,totalTokens:(s.inputTokens??0)+(s.outputTokens??0),latencyAvg:stats.latency.avg,latencyMax:stats.latency.max,
       credits:{start:credits[0]??null,end:credits.at(-1)??null,max:credits.length?Math.max(...credits):null,min:credits.length?Math.min(...credits):null},armyMax:s.armyMax??null,
       produced:stats.actions.acceptedProduce,actionsByType:stats.actions.byType,skippedReasons:stats.actions.skippedReasons,
       groups:Object.fromEntries(Object.entries(stats.groups).map(([id,g])=>[id,{asked:g.asked,waitRate:g.waitRate,top:Object.keys(g.choices)[0]??''}])),history};
@@ -124,7 +140,8 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
     const tab=await c.tabs.get(tabId);
     if(!supportedGame(tab.url))throw new Error('请先切换到王二火大的游戏标签页。');
     const config=validateSettings(await getSettings()),provider=activeProvider(config);
-    if(provider.requiresKey && !provider.apiKey)throw new Error('请先填写并保存 JEV 密钥。');
+    if(provider.requiresKey && !provider.apiKey)throw new Error(provider.id==='openai'?'请先填写并保存 API 密钥。':'请先填写并保存 JEV 密钥。');
+    if(needsModel(provider))throw new Error('请先获取模型列表并选择模型。');
     if(!await c.permissions.contains({origins:[originPattern(provider.apiBase)]}))throw new Error('尚未授权访问模型服务地址，请在插件中点击「授权访问」。');
     const old=await getSession(tabId);
     if(old?.running) {
@@ -137,14 +154,14 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
     await c.scripting.executeScript({target:{tabId,documentIds:[documentId]},world:'MAIN',files:['page.js']});
     const status=await pageCall(tabId,'status',null,documentId);
     if(!status?.available)throw new Error(status?.error || '请先进入一场正在运行的对局，再开启托管。');
-    const session={tabId,token:uuid(),documentId,origin:new URL(tab.url).origin,provider:provider.id,providerName:provider.name,running:true,startedAt:now(),updatedAt:now(),requests:0,decisions:0,failures:0,inputTokens:0,outputTokens:0,busyUntil:0,events:[],reason:'',error:'',maxDecisions:config.maxDecisions};
+    const session={tabId,token:uuid(),documentId,origin:new URL(tab.url).origin,provider:provider.id,providerName:provider.name,providerKind:provider.kind,endpoint:providerEndpoint(provider),configuredModel:provider.model,model:provider.model,callMode:provider.mode??'',running:true,startedAt:now(),updatedAt:now(),requests:0,decisions:0,failures:0,inputTokens:0,outputTokens:0,busyUntil:0,events:[],reason:'',error:'',maxDecisions:config.maxDecisions};
     await patch(tabId,()=>session);
     try {
       await c.tabs.sendMessage(tabId,{type:'BIND_SESSION',token:session.token},{documentId});
-      const result=await pageCall(tabId,'start',{token:session.token,maxDecisions:config.maxDecisions,autoCamera:config.autoCamera,objective:config.objective},documentId);
+      const result=await pageCall(tabId,'start',{token:session.token,maxDecisions:config.maxDecisions,autoCamera:config.autoCamera,objective:config.objective,...(provider.id==='openai'?{maxStaleTicks:900,requestTimeoutMs:timeoutFor(provider)+5000}:{})},documentId);
       if(!result?.running)throw new Error(result?.error || '托管未能启动。');
       await badge(tabId,'ON');
-      logAppend({at:now(),kind:'session',event:'start',tabId,provider:provider.id,model:provider.model,maxDecisions:config.maxDecisions});
+      logAppend({at:now(),kind:'session',event:'start',tabId,provider:provider.id,providerKind:provider.kind,model:provider.model,endpoint:session.endpoint,callMode:session.callMode,maxDecisions:config.maxDecisions});
       await notifyOverlay(await getSession(tabId));
       return result;
     } catch(e) { await stop(tabId,'start_failed');throw e; }
@@ -155,25 +172,22 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
     const auth=await authorize(sender,message.token);
     const config=await getSettings(),provider=activeProvider(config);
     // URL and credentials are read exclusively from trusted extension settings.
-    const endpoint=apiEndpoint(provider.apiBase);
+    const endpoint=providerEndpoint(provider);
     if(!hostAllowed(provider.apiBase,config.allowedHosts))throw new Error('公网明文地址需要先加入「允许的外部地址」。');
     if(!await c.permissions.contains({origins:[originPattern(endpoint)]}))throw new Error('API 访问权限已被撤销，请重新保存设置。');
     try { await patch(tabId,s=>{
       if(!s?.running || s.token!==auth.token)throw new Error('托管会话已停止。');
       if(s.busyUntil>now() || inflight.has(tabId))throw new Error('上一条决策尚未完成。');
       if(s.requests>=s.maxDecisions)throw Object.assign(new Error('已达到本局决策上限，托管已停止。'),{code:'DECISION_BUDGET'});
-      return {...s,requests:s.requests+1,busyUntil:now()+12000};
+      return {...s,requests:s.requests+1,busyUntil:now()+timeoutFor(provider)+4000};
     }); } catch(e) {
       if(e.code==='DECISION_BUDGET')await stop(tabId,'decision_budget');
       throw e;
     }
     const abort=new AbortController();inflight.set(tabId,abort);
-    const timeout=setTimeout(()=>abort.abort(),8000),started=now();
+    const timeout=setTimeout(()=>abort.abort(),timeoutFor(provider)),started=now();
     try {
-      const response=await fetchImpl(endpoint,{method:'POST',headers:authHeaders(provider),body:JSON.stringify({model:provider.model,state:message.body.state,questions}),signal:abort.signal,redirect:'error',credentials:'omit',referrerPolicy:'no-referrer'});
-      if(!response.ok){const error=new Error(httpError(response.status,provider.name));error.status=response.status;throw error;}
-      const raw=await response.text();if(raw.length>256000)throw new Error(`${provider.name} 响应过大，已拒绝处理。`);
-      const result={...validateAnswer(JSON.parse(raw),questions,provider.name),latencyMs:now()-started};
+      const result={...await callModel(provider,{state:message.body.state,questions},abort.signal),latencyMs:now()-started};
       await authorize(sender,message.token);
       await patch(tabId,s=>s?.token===auth.token?{...s,decisions:s.decisions+1,inputTokens:s.inputTokens+result.usage.input_tokens,outputTokens:s.outputTokens+result.usage.output_tokens,latencyMs:result.latencyMs,lastTick:message.body.state.tick,firstTick:s.firstTick??message.body.state.tick,lastChoices:Object.fromEntries(Object.entries(result.answers).map(([id,a])=>[id,a.choice])),model:result.model||s.model||provider.model,error:'',updatedAt:now()}:s);
       logAppend(decisionEntry({at:now(),tick:message.body.state.tick,provider:provider.id,model:result.model||provider.model,latencyMs:result.latencyMs,usage:result.usage,state:message.body.state,questions,answers:result.answers}));
@@ -293,39 +307,64 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
     if(message.type==='TEST_CONNECTION'){
       if(probing)throw new Error('连接测试正在进行，请稍候。');
       probing=true;
-      const abort=new AbortController(),timer=setTimeout(()=>abort.abort(),8000),started=now();
-      let name='Jev';
+      let name='Jev',timer;const abort=new AbortController(),started=now();
       try{
         const config=validateSettings(await getSettings()),provider=activeProvider(config);
-        name=provider.name;
-        if(provider.requiresKey && !provider.apiKey)throw new Error('请先填写并保存 JEV 密钥。');
+        name=provider.name;timer=setTimeout(()=>abort.abort(),timeoutFor(provider));
+        if(provider.requiresKey && !provider.apiKey)throw new Error(provider.id==='openai'?'请先填写并保存 API 密钥。':'请先填写并保存 JEV 密钥。');
+        if(needsModel(provider))throw new Error('请先获取模型列表并选择模型。');
         if(!await c.permissions.contains({origins:[originPattern(provider.apiBase)]}))throw new Error('尚未授权访问模型服务地址，请在插件中点击「授权访问」。');
         const questions={connection:{type:'choice',instructions:'Connection check only. Select ok. No game actions will be executed.',criteria:{ok:'Connection accepted'}}};
-        const response=await fetchImpl(apiEndpoint(provider.apiBase),{method:'POST',headers:authHeaders(provider),body:JSON.stringify({model:provider.model,state:{purpose:'extension_connection_check'},questions}),signal:abort.signal,redirect:'error',credentials:'omit',referrerPolicy:'no-referrer'});
-        if(!response.ok)throw new Error(httpError(response.status,name));
-        const raw=await response.text();if(raw.length>256000)throw new Error(`${name} 响应过大。`);
-        const result=validateAnswer(JSON.parse(raw),questions,name);
-        return {latencyMs:now()-started,provider:provider.id,providerName:name,model:result.model};
+        const result=await callModel(provider,{state:{purpose:'extension_connection_check'},questions},abort.signal);
+        return {latencyMs:now()-started,provider:provider.id,providerName:name,model:result.model,usage:result.usage};
       }catch(e){throw new Error(e.name==='AbortError'?`${name} 连接测试超时。`:new RegExp(`^(${name}|请先|尚未)`).test(e.message)?e.message:`${name} 连接失败，请检查地址、网络或响应格式。`);}
       finally{probing=false;clearTimeout(timer);}
+    }
+    if(message.type==='LIST_MODELS'){
+      // The popup may pass the base and key it is showing, so the list can be loaded before saving.
+      const settings=await getSettings();
+      const base=String(message.base??settings.openaiBase??DEFAULTS.openaiBase).trim(),apiKey=String(message.apiKey??settings.openaiKey??'').trim();
+      const url=serviceUrl(base,'/models'),savedBase=String(settings.openaiBase??DEFAULTS.openaiBase).trim();
+      // The stored key never goes to a different service than the one it was saved for.
+      if(settings.openaiKey && apiKey===settings.openaiKey && new URL(url).origin!==new URL(serviceUrl(savedBase,'/models')).origin)throw new Error('更换 API 服务时，请重新输入该服务的密钥。');
+      if(!hostAllowed(base,settings.allowedHosts))throw new Error('公网明文地址需要先加入「允许的外部地址」。');
+      if(!await c.permissions.contains({origins:[originPattern(base)]}))throw new Error('尚未授权访问模型服务地址，请在插件中点击「授权访问」。');
+      const abort=new AbortController(),timer=setTimeout(()=>abort.abort(),10000);
+      try{
+        const response=await fetchImpl(url,{method:'GET',headers:authHeaders({apiKey}),signal:abort.signal,redirect:'error',credentials:'omit',referrerPolicy:'no-referrer'});
+        const raw=await response.text();
+        if(!response.ok){const detail=serviceError(raw);throw Object.assign(new Error(httpError(response.status,'OpenAI')+(detail?` ${detail}`:'')),{status:response.status});}
+        let models;try{models=modelIds(JSON.parse(raw));}catch{models=[];}
+        if(!models.length)throw new Error('模型列表为空，请确认该服务支持 /models 接口。');
+        // Remember the list for this base so the dropdown is filled next time the popup opens.
+        const current=await getSettings();
+        if(String(current.openaiBase??DEFAULTS.openaiBase).trim()===base)await c.storage.local.set({settings:{...current,openaiModels:models}});
+        return {models,base};
+      }catch(e){throw new Error(e.name==='AbortError'?'获取模型列表超时。':e.status||/^模型列表/.test(e.message)?e.message:'获取模型列表失败，请检查地址、密钥和网络。');}
+      finally{clearTimeout(timer);}
     }
     if(message.type==='SAVE_SETTINGS'){
       const prior=await getSettings(),input=message.settings??{};
       // The form shows the stored keys, so what it sends is what gets saved; a message without
       // a key field keeps the stored one. A new Jev host must come with a key typed for it.
-      const apiKey=typeof input.apiKey==='string'?input.apiKey.trim():prior.apiKey,localKey=typeof input.localKey==='string'?input.localKey.trim():prior.localKey;
-      if(input.apiBase && new URL(apiEndpoint(input.apiBase)).origin!==new URL(apiEndpoint(prior.apiBase)).origin && (!apiKey || apiKey===prior.apiKey))throw new Error('更换 API 服务时，请重新输入该服务的密钥。');
-      const config=validateSettings({...input,apiKey,localKey},prior);
+      const keep=field=>typeof input[field]==='string'?input[field].trim():prior[field];
+      const apiKey=keep('apiKey'),localKey=keep('localKey'),openaiKey=keep('openaiKey');
+      const origin=value=>new URL(apiEndpoint(value)).origin;
+      if(input.apiBase && origin(input.apiBase)!==origin(prior.apiBase) && (!apiKey || apiKey===prior.apiKey))throw new Error('更换 API 服务时，请重新输入该服务的密钥。');
+      if(input.openaiBase && prior.openaiKey && origin(input.openaiBase)!==origin(prior.openaiBase??DEFAULTS.openaiBase) && openaiKey===prior.openaiKey)throw new Error('更换 API 服务时，请重新输入该服务的密钥。');
+      // The remembered model list belongs to the base it came from; the popup sends the list it loaded.
+      const openaiModels=Array.isArray(input.openaiModels)?input.openaiModels:input.openaiBase && input.openaiBase.trim()!==String(prior.openaiBase??DEFAULTS.openaiBase).trim()?[]:prior.openaiModels;
+      const config=validateSettings({...input,apiKey,localKey,openaiKey,openaiModels},prior);
       const before=activeProvider(prior),after=activeProvider(config);
-      if(before.id!==after.id || after.apiKey!==before.apiKey || after.apiBase!==before.apiBase || after.model!==before.model){for(const s of Object.values(await c.storage.session.get(null)))if(s?.running)await stop(s.tabId,'settings_changed');}
+      if(before.id!==after.id || after.apiKey!==before.apiKey || after.apiBase!==before.apiBase || after.model!==before.model || after.mode!==before.mode){for(const s of Object.values(await c.storage.session.get(null)))if(s?.running)await stop(s.tabId,'settings_changed');}
       await c.storage.local.set({settings:config});
       await broadcastConfig(config);
       return settingsView(config);
     }
     if(message.type==='CLEAR_KEY'){
-      const field=message.provider==='local'?'localKey':'apiKey';
+      const field=PROVIDER_FIELDS[message.provider]?.key??'apiKey';
       for(const s of Object.values(await c.storage.session.get(null)))if(s?.running)await stop(s.tabId,'key_removed');
-      await c.storage.local.set({settings:{...await getSettings(),[field]:''}});return field==='localKey'?{hasLocalKey:false}:{hasKey:false};
+      await c.storage.local.set({settings:{...await getSettings(),[field]:''}});return {localKey:{hasLocalKey:false},openaiKey:{hasOpenaiKey:false}}[field]??{hasKey:false};
     }
     const tabId=message.tabId;
     if(!Number.isInteger(tabId))throw new Error('未找到当前游戏标签页。');

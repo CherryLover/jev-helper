@@ -32,6 +32,26 @@ function reportError(message){
  if(field&&fieldError(field,message)){$(FIELD_IDS[field]).focus();return true;}
  notice(message);return false;
 }
+let logStatsCache;
+function renderLogStats(data){
+ logStatsCache=data;const box=$('log-stats');box.replaceChildren();
+ const s=data?.stats;$('log-size').textContent=data?.chars?tr('logSize',{kb:Math.round(data.chars/1024)}):'';
+ if(!s||!s.entries){const p=document.createElement('p');p.textContent=tr('logEmpty');box.append(p);$('log-export').disabled=true;$('log-clear').disabled=true;return;}
+ $('log-export').disabled=false;$('log-clear').disabled=false;
+ const line=text=>{const p=document.createElement('p');p.textContent=text;box.append(p);};
+ line(tr('logSummary',{entries:s.entries,sessions:s.sessions,decisions:s.decisions,failures:s.failures,avg:s.latency.avg??'—'}));
+ const reasons=Object.entries(s.actions.skippedReasons).slice(0,3).map(([k,v])=>`${k} ${v}`).join('，');
+ line(tr('logActions',{accepted:s.actions.accepted,waits:s.actions.waits,skipped:s.actions.skipped,reasons:reasons?`（${reasons}）`:''}));
+ const produce=Object.entries(s.actions.acceptedProduce).map(([k,v])=>`${k}×${v}`).join('，');
+ line(produce?tr('logProduce',{list:produce}):tr('logNoProduce'));
+ const groups=Object.entries(s.groups);
+ if(groups.length){line(tr('logGroups'));const ul=document.createElement('ul');for(const [id,g] of groups){const li=document.createElement('li');li.textContent=tr('logGroupLine',{id,asked:g.asked,rate:g.waitRate,options:g.avgOptions,confidence:g.avgConfidence});ul.append(li);}box.append(ul);}
+}
+async function refreshLog(){try{renderLogStats(await rpc({type:'LOG_STATS'}));}catch(e){notice(e.message);}}
+function downloadJson(name,data){
+ const blob=new Blob([JSON.stringify(data,null,1)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');
+ a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);
+}
 function openSettingsPanel(){for(const other of document.querySelectorAll('[data-panel]')){const on=other.dataset.panel==='settings';other.setAttribute('aria-pressed',on);$(`panel-${other.dataset.panel}`).hidden=!on;}activePanel='settings';}
 // The connection probe reports on its own button: testing → ok / fail. Any edit resets it.
 function showTest(state,key,vars){testState={state,key,vars};const btn=$('test-connection');btn.dataset.state=state;btn.disabled=state==='testing';$('test-label').textContent=tr(key??'test',vars);}
@@ -51,6 +71,7 @@ function translate(){
  if(testState.state!=='idle')showTest(testState.state,testState.key,testState.vars);
  if(noticeState)notice(noticeState.text,noticeState.success,noticeState.key,noticeState.vars);
  for(const [field,message] of Object.entries(fieldMessages))fieldError(field,message);
+ if(logStatsCache)renderLogStats(logStatsCache);
  if(lastStatus)displayStatus(lastStatus);
 }
 function keyPlaceholder(){$('api-key').placeholder=tr('keyEmpty');$('local-key').placeholder=tr('localKeyEmpty');$('clear-key').hidden=!(selectedProvider()==='local'?config.hasLocalKey:config.hasKey);}
@@ -111,8 +132,15 @@ async function refresh(){if(tabId===undefined||refreshing)return;refreshing=true
 for(const btn of document.querySelectorAll('[data-panel]'))btn.addEventListener('click',()=>{
  activePanel=btn.dataset.panel;
  for(const other of document.querySelectorAll('[data-panel]')){const on=other===btn;other.setAttribute('aria-pressed',on);$(`panel-${other.dataset.panel}`).hidden=!on;}
+ if(activePanel==='settings')refreshLog();
  if(lastStatus)displayStatus(lastStatus);
 });
+$('log-export').addEventListener('click',async()=>{
+ $('log-export').disabled=true;
+ try{const data=await rpc({type:'LOG_EXPORT'});const stamp=new Date().toISOString().replace(/[-:]/g,'').replace('T','-').slice(0,15);const file=`jev-log-${stamp}.json`;downloadJson(file,data);notify('logExported',true,{file});}
+ catch(e){notice(e.message);}finally{$('log-export').disabled=false;}
+});
+$('log-clear').addEventListener('click',async()=>{try{await rpc({type:'LOG_CLEAR'});notify('logCleared',true);await refreshLog();}catch(e){notice(e.message);}});
 for(const [id,language]of [['lang-zh','zh-CN'],['lang-en','en']])$(id).addEventListener('click',async()=>{
  try{await rpc({type:'SET_LANGUAGE',language});config.language=language;translate();}catch(e){notice(e.message);}
 });
@@ -155,5 +183,5 @@ $('clear-key').addEventListener('click',async()=>{try{const provider=selectedPro
 for(const [id,type]of [['start','START'],['stop','STOP']])$(id).addEventListener('click',async()=>{
  $(id).disabled=true;notice('');try{await rpc({type,tabId});await refresh();}catch(e){if(reportError(e.message))openSettingsPanel();$(id).disabled=false;}
 });
-try{config=await rpc({type:'GET_SETTINGS'});translate();displayConfig();const [tab]=await chrome.tabs.query({active:true,currentWindow:true});tabId=tab?.id;await refresh();}catch(e){notice(e.message);$('status').textContent=tr('connectionFailed');}
+try{config=await rpc({type:'GET_SETTINGS'});translate();displayConfig();const [tab]=await chrome.tabs.query({active:true,currentWindow:true});tabId=tab?.id;await refresh();await refreshLog();}catch(e){notice(e.message);$('status').textContent=tr('connectionFailed');}
 const timer=setInterval(()=>refresh().catch(e=>{if(lastStatus)displayStatus({...lastStatus,liveObservation:false});notice(e.message);}),1500);window.addEventListener('pagehide',()=>clearInterval(timer),{once:true});

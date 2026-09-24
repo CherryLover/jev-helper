@@ -176,3 +176,22 @@ test('the Jev source still requires a key and the connection probe follows the s
   await assert.rejects(failing.handle({type:'DECIDE',token:s.token,body},sender),/Error: Laya 请求失败（HTTP 503）/);
   assert.equal((await failing.getSession(7)).running,true);assert.equal((await failing.getSession(7)).failures,1);
 });
+
+test('decision log records questions, answers, actions and failures; export is trusted-only and carries no secrets',async()=>{
+  let fail=false;const x=await setup(async()=>fail?new Response('',{status:503}):answer());
+  await x.app.handle(x.request,sender);
+  await x.app.handle({type:'EVENT',token:x.s.token,event:{kind:'action',tick:101,question:'tactics',choice:'attack',accepted:true,action:{type:'attack',ids:[1]},confidence:.8}},sender);
+  await x.app.handle({type:'EVENT',token:x.s.token,event:{kind:'observation',tick:102,credits:900,state:{self:{credits:900}}}},sender);
+  fail=true;await assert.rejects(x.app.handle(x.request,sender));
+  await assert.rejects(x.app.handle({type:'LOG_EXPORT'},sender));await assert.rejects(x.app.handle({type:'LOG_STATS'},sender));await assert.rejects(x.app.handle({type:'LOG_CLEAR'},sender));
+  const out=await x.app.handle({type:'LOG_EXPORT'},extension);
+  const kinds=out.entries.map(e=>e.kind);assert.deepEqual(kinds,['session','decision','action','failure']);
+  assert.equal(out.entries[1].groups.tactics.choice,'attack');assert.equal(out.entries[1].groups.tactics.options.attack,'Attack');assert.equal(out.entries[1].state.tick,100);assert.equal(out.entries[1].provider,'jev');
+  assert.equal(out.entries[3].status,503);assert.equal(out.stats.decisions,1);assert.equal(out.stats.failures,1);assert.equal(out.stats.actions.accepted,1);
+  assert.doesNotMatch(JSON.stringify(out),/test-only-secret|token|documentId/);
+  assert.equal(x.data.local.log.length,4);
+  const stats=await x.app.handle({type:'LOG_STATS'},extension);assert.equal(stats.stats.entries,4);assert.ok(stats.chars>0);
+  const restarted=createBackground(x.c,{fetchImpl:async()=>answer()});
+  assert.equal((await restarted.handle({type:'LOG_STATS'},extension)).stats.entries,4);
+  await restarted.handle({type:'LOG_CLEAR'},extension);assert.equal((await restarted.handle({type:'LOG_STATS'},extension)).stats.entries,0);assert.equal(x.data.local.log,undefined);
+});

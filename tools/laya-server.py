@@ -65,8 +65,10 @@ def validate_request(body):
 class Service:
     """Owns the model and serializes inference; MLX is driven from one call at a time."""
 
-    def __init__(self, predict, model_name, token=None, raw_state=False):
+    def __init__(self, predict, model_name, token=None, raw_state=False, log_path=None):
         self.predict = predict
+        self.log_path = Path(log_path).expanduser() if log_path else None
+        self.log_lock = threading.Lock()
         self.model_name = model_name
         self.token = token or None
         self.raw_state = raw_state
@@ -88,12 +90,37 @@ class Service:
             output = self.predict(state, questions)
             elapsed = (time.perf_counter() - started) * 1000
             self.requests += 1
+        if self.log_path:
+            self.log(state, questions, output, elapsed)
         return {
             "model": self.model_name,
             "answers": output["answers"],
             "usage": output.get("usage", {"input_tokens": 0, "output_tokens": 0}),
             "latency_ms": round(elapsed, 2),
         }
+
+    def log(self, state, questions, output, elapsed):
+        """One JSON line per decision: what was asked, what was chosen, how sure, how long."""
+        record = {
+            "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "latency_ms": round(elapsed, 1),
+            "input_tokens": output.get("usage", {}).get("input_tokens"),
+            "state_chars": len(json.dumps(state, ensure_ascii=False)),
+            "state_head": {k: v for k, v in state.items() if not isinstance(v, (list, dict))} if isinstance(state, dict) else str(state)[:200],
+            "questions": {
+                qid: {
+                    "options": list((q.get("criteria") or {}))[:64] if isinstance(q.get("criteria"), dict) else q.get("criteria"),
+                    "choice": output["answers"].get(qid, {}).get("choice"),
+                    "confidence": output["answers"].get(qid, {}).get("confidence"),
+                    "probabilities": output["answers"].get(qid, {}).get("probabilities"),
+                }
+                for qid, q in questions.items()
+            },
+        }
+        line = json.dumps(record, ensure_ascii=False) + "\n"
+        with self.log_lock:
+            with self.log_path.open("a", encoding="utf-8") as handle:
+                handle.write(line)
 
     def health(self):
         return {
@@ -227,6 +254,7 @@ def main(argv=None):
     parser.add_argument("--device", choices=("gpu", "cpu"), default="gpu")
     parser.add_argument("--raw-state", action="store_true", help="send state as-is, no reordering")
     parser.add_argument("--quiet", action="store_true", help="do not log each request")
+    parser.add_argument("--log", default=os.environ.get("LAYA_LOG", ""), help="append one JSON line per decision to this file")
     args = parser.parse_args(argv)
     if args.lan:
         args.host = "0.0.0.0"
@@ -250,7 +278,9 @@ def main(argv=None):
     warm = agent.predict("warm-up", {"ready": {"type": "choice", "instructions": "Select ok.", "criteria": {"ok": "ready"}}})
     print(f"Model ready in {time.perf_counter() - started:.1f}s (warm-up answer: {warm['answers']['ready']['choice']})", flush=True)
 
-    service = Service(agent.predict, checkpoint.name, token=args.token, raw_state=args.raw_state)
+    service = Service(agent.predict, checkpoint.name, token=args.token, raw_state=args.raw_state, log_path=args.log or None)
+    if args.log:
+        print(f"Decision log: {Path(args.log).expanduser()}", flush=True)
     server = ThreadingHTTPServer((args.host, args.port), make_handler(service, quiet=args.quiet))
     server.daemon_threads = True
     hosts = [args.host] if args.host != "0.0.0.0" else ["127.0.0.1", *lan_addresses()]

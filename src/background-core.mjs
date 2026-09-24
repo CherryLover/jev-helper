@@ -1,5 +1,6 @@
 import {DEFAULTS, supportedGame, apiEndpoint, originPattern, validateSettings, publicSettings, privateSettings, prepareQuestions, validateAnswer, httpError, activeProvider, authHeaders} from './shared.mjs';
 import {summarize,recordObservation} from './telemetry.mjs';
+import {LOG_KEY,appendEntries,decisionEntry,eventEntry,logStats} from './logbook.mjs';
 
 export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = () => crypto.randomUUID()} = {}) {
   const inflight = new Map(), controlLocks = new Map(), stateLocks = new Map();
@@ -9,6 +10,19 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
     c.storage.session.setAccessLevel({accessLevel:'TRUSTED_CONTEXTS'}),
   ]);
   const key = tabId => `session:${tabId}`;
+  // Decision log: buffered in memory, flushed in batches so frequent events do not rewrite storage each time.
+  let pending=[],flushTimer;
+  async function flushLog(){
+    clearTimeout(flushTimer);flushTimer=undefined;
+    if(!pending.length)return;
+    const batch=pending;pending=[];
+    await serial(stateLocks,'log',async()=>{const current=(await c.storage.local.get(LOG_KEY))[LOG_KEY];await c.storage.local.set({[LOG_KEY]:appendEntries(Array.isArray(current)?current:[],batch)});}).catch(()=>{});
+  }
+  function logAppend(entry){
+    if(!entry)return;pending.push(entry);
+    if(pending.length>=25)flushLog();else flushTimer??=setTimeout(flushLog,1500);
+  }
+  const readLog=async()=>{await flushLog();const current=(await c.storage.local.get(LOG_KEY))[LOG_KEY];return Array.isArray(current)?current:[];};
   const getSession = async tabId => (await c.storage.session.get(key(tabId)))[key(tabId)];
   const getSettings = async () => ({...DEFAULTS,...(await c.storage.local.get('settings')).settings});
   const contentConfig = s => ({hotkey:s.hotkey,language:s.language,showOverlay:s.showOverlay,providerName:activeProvider(s).name});
@@ -43,6 +57,8 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
   async function stop(tabId, reason='manual') {
     inflight.get(tabId)?.abort();
     const s=await patch(tabId,s=>s?{...s,running:false,busyUntil:0,reason,updatedAt:now()}:undefined);
+    if(s)logAppend({at:now(),kind:'session',event:'stop',tabId,reason,decisions:s.decisions,failures:s.failures});
+    await flushLog();
     await notifyOverlay(s);
     if(s)await pageCall(tabId,'stop',reason,s.documentId).catch(()=>{});
     await badge(tabId,'');
@@ -81,6 +97,7 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
       const result=await pageCall(tabId,'start',{token:session.token,maxDecisions:config.maxDecisions,autoCamera:config.autoCamera},documentId);
       if(!result?.running)throw new Error(result?.error || '托管未能启动。');
       await badge(tabId,'ON');
+      logAppend({at:now(),kind:'session',event:'start',tabId,provider:provider.id,model:provider.model,maxDecisions:config.maxDecisions});
       await notifyOverlay(await getSession(tabId));
       return result;
     } catch(e) { await stop(tabId,'start_failed');throw e; }
@@ -111,12 +128,14 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
       const result={...validateAnswer(JSON.parse(raw),questions,provider.name),latencyMs:now()-started};
       await authorize(sender,message.token);
       await patch(tabId,s=>s?.token===auth.token?{...s,decisions:s.decisions+1,inputTokens:s.inputTokens+result.usage.input_tokens,outputTokens:s.outputTokens+result.usage.output_tokens,latencyMs:result.latencyMs,lastTick:message.body.state.tick,lastChoices:Object.fromEntries(Object.entries(result.answers).map(([id,a])=>[id,a.choice])),model:result.model||s.model||provider.model,error:'',updatedAt:now()}:s);
+      logAppend(decisionEntry({at:now(),tick:message.body.state.tick,provider:provider.id,model:result.model||provider.model,latencyMs:result.latencyMs,usage:result.usage,state:message.body.state,questions,answers:result.answers}));
       return result;
     } catch(e) {
       const current=await getSession(tabId);
       if(current?.running && current.token===auth.token){
         const error=e.name==='AbortError'?`${provider.name} 请求超时，请检查网络或 API 服务。`:e.status?e.message:e.message?.startsWith(provider.name)?e.message:'模型请求未完成，请检查 API 地址、网络或响应格式。';
         await patch(tabId,s=>s?.token===auth.token?{...s,failures:s.failures+1,error,updatedAt:now()}:s);
+        logAppend({at:now(),kind:'failure',tick:Number.isFinite(message.body?.state?.tick)?message.body.state.tick:null,provider:provider.id,status:e.status??null,error:String(error).slice(0,240)});
         if([401,402,403].includes(e.status))await stop(tabId,`http_${e.status}`);
         await badge(tabId,'!', '#bd5656');
         throw new Error(error);
@@ -131,6 +150,7 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
     await authorize(sender,message.token);
     const e=message.event,tabId=sender.tab.id;
     if(!e || JSON.stringify(e).length>256000)throw new Error('事件无效。');
+    logAppend(eventEntry(e,now()));
     await patch(tabId,s=>{
       if(!s || s.token!==message.token)return s;
       let next={...s,updatedAt:now()};
@@ -175,6 +195,13 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
     }
     if(!trustExtension(sender))throw new Error('此操作只允许在插件窗口中执行。');
     if(message.type==='GET_SETTINGS')return privateSettings(await getSettings());
+    if(message.type==='LOG_STATS'){const entries=await readLog();return {stats:logStats(entries),chars:JSON.stringify(entries).length};}
+    if(message.type==='LOG_EXPORT'){
+      const entries=await readLog();
+      // Settings go out without credentials; entries never contained any.
+      return {exportedAt:new Date(now()).toISOString(),version:c.runtime.getManifest?.()?.version??'',settings:publicSettings(await getSettings()),stats:logStats(entries),entries};
+    }
+    if(message.type==='LOG_CLEAR'){pending=[];clearTimeout(flushTimer);flushTimer=undefined;await c.storage.local.remove(LOG_KEY);return {entries:0};}
     if(message.type==='SET_LANGUAGE' || message.type==='SET_OVERLAY'){
       const settings=await getSettings();
       if(message.type==='SET_LANGUAGE')settings.language=message.language==='en'?'en':'zh-CN';

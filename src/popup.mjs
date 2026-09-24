@@ -33,62 +33,6 @@ function reportError(message){
  if(/授权|访问权限/.test(message)&&config.permitted===false){renderPermission();$('authorize').focus();notice(message);return true;}
  notice(message);return false;
 }
-let logStatsCache,matchList=[],matchSelected,matchDetail;
-const fmtDuration=ms=>{const s=Math.max(0,Math.round(ms/1000)),h=Math.floor(s/3600),m=Math.floor(s%3600/60),sec=s%60;return h?`${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`:`${m}:${String(sec).padStart(2,'0')}`;};
-const outcomeText=m=>tr(messages[`matchOutcome_${m.outcome}`]?`matchOutcome_${m.outcome}`:'matchOutcome_');
-function renderMatchList(){
- const ul=$('match-list');ul.replaceChildren();$('matches-count').textContent=matchList.length?String(matchList.length):'';$('matches-empty').hidden=matchList.length>0;
- for(const m of matchList){const li=document.createElement('li'),btn=document.createElement('button');btn.type='button';btn.setAttribute('aria-pressed',String(m.id===matchSelected));
-  const row=document.createElement('span');row.className='row';const when=document.createElement('span');when.textContent=new Date(m.startedAt).toLocaleString(config.language,{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});const outcome=document.createElement('span');outcome.textContent=outcomeText(m);row.append(when,outcome);
-  const sub=document.createElement('span');sub.className='sub';sub.textContent=`${fmtDuration(m.durationMs)} · ${m.providerName||'Jev'} · ${tr('decisions')} ${format(m.decisions)} · ${tr('matchCreditsEnd')} ${format(m.credits?.end)}`;
-  btn.append(row,sub);btn.addEventListener('click',()=>selectMatch(m.id));li.append(btn);ul.append(li);}
-}
-function renderMatchDetail(m){
- matchDetail=m;$('match-detail').hidden=!m;if(!m)return;
- $('match-title').textContent=new Date(m.startedAt).toLocaleString(config.language,{hour12:false});$('match-outcome').textContent=outcomeText(m);
- $('match-duration').textContent=fmtDuration(m.durationMs);$('match-decisions').textContent=format(m.decisions);$('match-credits').textContent=format(m.credits?.end);
- const box=$('match-facts');box.replaceChildren();const line=text=>{const p=document.createElement('p');p.textContent=text;box.append(p);};
- line(tr('matchFacts',{provider:m.providerName||'Jev',model:m.model||'—',requests:m.requests,failures:m.failures,avg:m.latencyAvg??'—',game:m.gameSeconds!=null?fmtDuration(m.gameSeconds*1000):'—'}));
- line(tr('matchActions',{accepted:m.acceptedActions,waits:m.waits,army:format(m.armyMax),start:format(m.credits?.start),end:format(m.credits?.end),max:format(m.credits?.max)}));
- const produced=Object.entries(m.produced??{}).map(([k,v])=>`${k}×${v}`).join('，');line(produced?tr('logProduce',{list:produced}):tr('logNoProduce'));
- const groups=Object.entries(m.groups??{}).map(([id,g])=>`${id} ${g.waitRate}%`).join('，');if(groups)line(tr('matchGroups',{list:groups}));
- if(m.objective)line(tr('matchObjective',{objective:m.objective}));
- line(tr('matchReason',{reason:messages[m.reason]?tr(m.reason):m.reason||'—'}));
- if(m.reportFile)line(tr('matchReport',{file:m.reportFile}));
- drawChart($('match-economy'),m.history??[],[{key:'credits',label:'creditsLegend',color:'#d9b76f'},{key:'freeCredits',label:'freeLegend',color:'#91cbb1'}],config.language,tr('economyChart'));
- drawChart($('match-decision-chart'),m.history??[],[{key:'decisions',label:'decisionLegend',color:'#d9b76f'}],config.language,tr('decisionChart'));
- drawChart($('match-force'),m.history??[],[{key:'ownUnits',label:'ownUnitsLegend',color:'#91cbb1'},{key:'ownBuildings',label:'ownBuildingsLegend',color:'#d9b76f'},{key:'enemyUnits',label:'enemyUnitsLegend',color:'#ed9383'}],config.language,tr('forceChart'));
- drawChart($('match-loss'),m.history??[],[{key:'ownBuilt',label:'builtLegend',color:'#d9b76f'},{key:'ownLost',label:'lostLegend',color:'#ed9383'},{key:'enemyDestroyed',label:'destroyedLegend',color:'#91cbb1'}],config.language,tr('lossChart'));
- for(const [id,value] of [['mark-victory','victory'],['mark-defeat','defeat']])$(id).setAttribute('aria-pressed',String(m.outcome===value&&m.outcomeMarked===true));
-}
-for(const [id,outcome] of [['mark-victory','victory'],['mark-defeat','defeat'],['mark-clear','']])$(id).addEventListener('click',async()=>{
- if(!matchDetail)return;try{const m=await rpc({type:'MATCH_SET_OUTCOME',id:matchDetail.id,outcome});matchList=matchList.map(x=>x.id===m.id?{...x,outcome:m.outcome,outcomeMarked:m.outcomeMarked}:x);renderMatchList();renderMatchDetail(m);notify('matchMarked',true,{outcome:outcomeText(m)});}catch(e){notice(e.message);}
-});
-async function selectMatch(id){matchSelected=id;renderMatchList();try{renderMatchDetail(await rpc({type:'MATCH_GET',id}));}catch(e){notice(e.message);}}
-async function refreshMatches(){
- try{const {matches}=await rpc({type:'MATCHES_LIST'});matchList=matches;if(!matchList.some(m=>m.id===matchSelected))matchSelected=matchList[0]?.id;renderMatchList();
-  if(matchSelected)renderMatchDetail(await rpc({type:'MATCH_GET',id:matchSelected}));else renderMatchDetail(undefined);}
- catch(e){notice(e.message);}
-}
-function renderLogStats(data){
- logStatsCache=data;const box=$('log-stats');box.replaceChildren();
- const s=data?.stats;$('log-size').textContent=data?.chars?tr('logSize',{kb:Math.round(data.chars/1024)}):'';
- if(!s||!s.entries){const p=document.createElement('p');p.textContent=tr('logEmpty');box.append(p);$('log-export').disabled=true;$('log-clear').disabled=true;return;}
- $('log-export').disabled=false;$('log-clear').disabled=false;
- const line=text=>{const p=document.createElement('p');p.textContent=text;box.append(p);};
- line(tr('logSummary',{entries:s.entries,sessions:s.sessions,decisions:s.decisions,failures:s.failures,avg:s.latency.avg??'—'}));
- const reasons=Object.entries(s.actions.skippedReasons).slice(0,3).map(([k,v])=>`${k} ${v}`).join('，');
- line(tr('logActions',{accepted:s.actions.accepted,waits:s.actions.waits,skipped:s.actions.skipped,reasons:reasons?`（${reasons}）`:''}));
- const produce=Object.entries(s.actions.acceptedProduce).map(([k,v])=>`${k}×${v}`).join('，');
- line(produce?tr('logProduce',{list:produce}):tr('logNoProduce'));
- const groups=Object.entries(s.groups);
- if(groups.length){line(tr('logGroups'));const ul=document.createElement('ul');for(const [id,g] of groups){const li=document.createElement('li');li.textContent=tr('logGroupLine',{id,asked:g.asked,rate:g.waitRate,options:g.avgOptions,confidence:g.avgConfidence});ul.append(li);}box.append(ul);}
-}
-async function refreshLog(){try{renderLogStats(await rpc({type:'LOG_STATS'}));}catch(e){notice(e.message);}}
-function downloadJson(name,data){
- const blob=new Blob([JSON.stringify(data,null,1)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');
- a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);
-}
 // Settings are saved before the browser is asked for site access, so a dismissed prompt never
 // costs the user what they typed. The banner offers the grant again with one click.
 function renderPermission(){const banner=$('permission-banner');const need=config.permitted===false;banner.hidden=!need;if(need)$('permission-text').textContent=tr('permissionNeeded',{origin:config.origin});}
@@ -116,9 +60,7 @@ function translate(){
  if(testState.state!=='idle')showTest(testState.state,testState.key,testState.vars);
  if(noticeState)notice(noticeState.text,noticeState.success,noticeState.key,noticeState.vars);
  for(const [field,message] of Object.entries(fieldMessages))fieldError(field,message);
- if(logStatsCache)renderLogStats(logStatsCache);
  renderPermission();
- if(activePanel==='matches'){renderMatchList();if(matchDetail)renderMatchDetail(matchDetail);}
  if(lastStatus)displayStatus(lastStatus);
 }
 function keyPlaceholder(){$('api-key').placeholder=tr('keyEmpty');$('local-key').placeholder=tr('localKeyEmpty');$('clear-key').hidden=!(selectedProvider()==='local'?config.hasLocalKey:config.hasKey);}
@@ -181,18 +123,8 @@ async function refresh(){if(tabId===undefined||refreshing)return;refreshing=true
 for(const btn of document.querySelectorAll('[data-panel]'))btn.addEventListener('click',()=>{
  activePanel=btn.dataset.panel;
  for(const other of document.querySelectorAll('[data-panel]')){const on=other===btn;other.setAttribute('aria-pressed',on);$(`panel-${other.dataset.panel}`).hidden=!on;}
- if(activePanel==='settings')refreshLog();
- if(activePanel==='matches')refreshMatches();
  if(lastStatus)displayStatus(lastStatus);
 });
-$('log-export').addEventListener('click',async()=>{
- $('log-export').disabled=true;
- try{const data=await rpc({type:'LOG_EXPORT'});const stamp=new Date().toISOString().replace(/[-:]/g,'').replace('T','-').slice(0,15);const file=`jev-log-${stamp}.json`;downloadJson(file,data);notify('logExported',true,{file});}
- catch(e){notice(e.message);}finally{$('log-export').disabled=false;}
-});
-$('match-export').addEventListener('click',()=>{if(!matchDetail)return;const stamp=new Date(matchDetail.startedAt).toISOString().replace(/[-:]/g,'').replace('T','-').slice(0,15);const file=`jev-match-${stamp}.json`;downloadJson(file,matchDetail);notify('matchExported',true,{file});});
-$('matches-clear').addEventListener('click',async()=>{try{await rpc({type:'MATCHES_CLEAR'});matchSelected=undefined;notify('matchesCleared',true);await refreshMatches();}catch(e){notice(e.message);}});
-$('log-clear').addEventListener('click',async()=>{try{await rpc({type:'LOG_CLEAR'});notify('logCleared',true);await refreshLog();}catch(e){notice(e.message);}});
 for(const [id,language]of [['lang-zh','zh-CN'],['lang-en','en']])$(id).addEventListener('click',async()=>{
  try{await rpc({type:'SET_LANGUAGE',language});config.language=language;translate();}catch(e){notice(e.message);}
 });
@@ -242,9 +174,10 @@ $('settings').addEventListener('submit',async e=>{
  }catch(error){reportError(error.message);}
 });
 $('authorize').addEventListener('click',authorize);
+$('open-dashboard').addEventListener('click',()=>chrome.tabs.create({url:chrome.runtime.getURL('dashboard.html')}));
 $('clear-key').addEventListener('click',async()=>{try{const provider=selectedProvider();await rpc({type:'CLEAR_KEY',provider});if(provider==='local'){config.hasLocalKey=false;config.localKey='';$('local-key').value='';}else{config.hasKey=false;config.apiKey='';$('api-key').value='';}keyPlaceholder();notify('keyCleared',true);await refresh();}catch(e){notice(e.message);}});
 for(const [id,type]of [['start','START'],['stop','STOP']])$(id).addEventListener('click',async()=>{
  $(id).disabled=true;notice('');try{await rpc({type,tabId});await refresh();}catch(e){if(reportError(e.message))openSettingsPanel();$(id).disabled=false;}
 });
-try{config=await rpc({type:'GET_SETTINGS'});translate();displayConfig();const [tab]=await chrome.tabs.query({active:true,currentWindow:true});tabId=tab?.id;await refresh();await refreshLog();}catch(e){notice(e.message);$('status').textContent=tr('connectionFailed');}
+try{config=await rpc({type:'GET_SETTINGS'});translate();displayConfig();const [tab]=await chrome.tabs.query({active:true,currentWindow:true});tabId=tab?.id;await refresh();}catch(e){notice(e.message);$('status').textContent=tr('connectionFailed');}
 const timer=setInterval(()=>refresh().catch(e=>{if(lastStatus)displayStatus({...lastStatus,liveObservation:false});notice(e.message);}),1500);window.addEventListener('pagehide',()=>clearInterval(timer),{once:true});

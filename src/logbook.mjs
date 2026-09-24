@@ -48,6 +48,7 @@ export function eventEntry(e, at) {
   if (kind === 'stop') return { ...base, reason: short(e.reason, 40) };
   if (kind === 'outcome') return { ...base, result: short(e.result, 24) };
   if (kind === 'error') return { ...base, message: short(e.message, 240) };
+  if (kind === 'meta') return { ...base, pageTitle: short(e.pageTitle, 120), playerCount: number(e.playerCount), opponents: number(e.opponents), map: e.map && number(e.map.width) !== null ? { width: e.map.width, height: e.map.height } : null, startTick: number(e.startTick) };
   if (['place', 'micro', 'observed', 'camera'].includes(kind)) return { ...base, name: short(e.name, 40), text: short(e.description ?? e.purpose ?? e.message, 160) };
   return null; // observations are sampled by telemetry already; everything else is noise
 }

@@ -10,7 +10,7 @@ let status={supported:true,running:true,title:'界面预览 · 模拟对局 / UI
 if(new URL(location.href).searchParams.has('empty'))status={supported:true,running:false,title:'UI fixture · Lobby',events:[]};
 const deny=new URL(location.href).searchParams.has('deny');let granted=!deny;
 const overlayStatus={running:true,decisions:13,credits:8450,latencyMs:287,lastTick:5400,failures:1,losses:{ownUnits:7,ownBuildings:1,enemyUnits:23,enemyBuildings:4}};
-window.chrome={permissions:{request:async()=>{if(deny&&!window.__grantNext)return false;granted=true;return true;}},tabs:{query:async()=>[{id:1}]},runtime:{onMessage:{addListener(){}},sendMessage:async m=>{
+window.chrome={tabs:{create:o=>window.open(o.url,'_blank'),query:async()=>[{id:1}]},permissions:{request:async()=>{if(deny&&!window.__grantNext)return false;granted=true;return true;}},runtime:{onMessage:{addListener(){}},sendMessage:async m=>{
  if(m.type==='PUBLIC_CONFIG')return {ok:true,value:{hotkey:settings.hotkey,language:settings.language,showOverlay:true,providerName:settings.providerName}};
  if(m.type==='OVERLAY_STATUS')return {ok:true,value:{...overlayStatus,hotkey:settings.hotkey,language:settings.language,showOverlay:true,providerName:settings.providerName}};
  if(m.type==='SET_AUTO_REPORT'){settings.autoReport=m.autoReport;return {ok:true,value:{autoReport:m.autoReport}};}
@@ -22,7 +22,12 @@ window.chrome={permissions:{request:async()=>{if(deny&&!window.__grantNext)retur
  if(m.type==='LOG_CLEAR')return {ok:true,value:{entries:0}};
  const matchA={id:'a',startedAt:now-5400000,endedAt:now-1800000,durationMs:3600000,gameSeconds:3300,provider:'jev',providerName:'Jev',model:'jev-1.13',objective:'摧毁地图东北角的五角大楼',reason:'victory',outcome:'victory',decisions:412,requests:415,failures:3,acceptedActions:230,waits:512,inputTokens:900000,latencyAvg:812,credits:{start:10000,end:23450,max:31200,min:2100},armyMax:38,produced:{MTNK:22,HARV:4,GAPOWR:3,GAREFN:2},groups:{construction:{asked:120,waitRate:60},vehicles:{asked:200,waitRate:40},tactics:{asked:300,waitRate:12}},history:Array.from({length:120},(_,i)=>({at:now-5400000+i*30000,gameSeconds:i*27,credits:10000+Math.sin(i/9)*6000+i*110,freeCredits:6000+Math.sin(i/9)*4000+i*90,decisions:Math.floor(i*3.4),ownUnits:8+Math.floor(i/4),ownBuildings:6+Math.floor(i/20),enemyUnits:Math.max(0,Math.round(6+Math.sin(i/7)*5)),ownBuilt:Math.floor(i/3),ownLost:Math.floor(i/8),enemyDestroyed:Math.floor(i/2.5)}))};
  const matchB={...matchA,id:'b',startedAt:now-9000000,endedAt:now-7200000,durationMs:1800000,gameSeconds:1700,providerName:'Laya',provider:'local',model:'laya-multilingual-mlx',reason:'defeated_or_observer',outcome:'defeat',decisions:386,credits:{start:10000,end:1200,max:12000,min:300},armyMax:12,produced:{HTNK:6}};
+ matchA.meta={pageTitle:'王二火大 · 盟军战役 第3关',url:'https://ra2web.github.io/#campaign/allied/3',me:{name:'Player',country:'America'},players:[{name:'Player',country:'America',allied:true,isAi:false,combatant:true},{name:'Soviet AI',country:'Russia',allied:false,isAi:true,combatant:true}],playerCount:2,opponents:1,map:{width:120,height:120},startTick:1619,startTime:107};matchA.label=matchA.label??'';matchA.notes=matchA.notes??'';matchA.ledger={ownUnitsLost:9,ownBuildingsLost:1,enemyUnitsDestroyed:41,enemyBuildingsDestroyed:12};
+ const logA=[{at:now-5400000,kind:'session',event:'start',provider:'jev',model:'jev-latest'},{at:now-5399000,kind:'meta',tick:1619,pageTitle:matchA.meta.pageTitle,playerCount:2},...Array.from({length:60},(_,i)=>({at:now-5390000+i*60000,kind:'decision',tick:1700+i*60,provider:'jev',model:'jev-1.13',latencyMs:600+Math.round(Math.sin(i)*200),groups:{construction:{choice:i%3?'wait':'produce_GAPOWR',confidence:.6},tactics:{choice:i%2?'engage_visible':'assault_1003',confidence:.9}}})),{at:now-3000000,kind:'action',tick:4000,question:'scouting',choice:'explore_80_90',auto:true,accepted:true,reason:'auto_explore'},{at:now-1800000,kind:'outcome',tick:9000,result:'victory'},{at:now-1800000,kind:'stop',tick:9000,reason:'victory'}];
  if(m.type==='MATCHES_LIST')return {ok:true,value:{matches:[matchA,matchB].map(({history,...x})=>({...x,samples:history.length}))}};
+ if(m.type==='MATCH_LOG_GET')return {ok:true,value:{id:m.id,entries:m.id==='a'?logA:[]}};
+ if(m.type==='MATCH_UPDATE'){const t=m.id==='b'?matchB:matchA;if(typeof m.label==='string')t.label=m.label;if(typeof m.notes==='string')t.notes=m.notes;if(['victory','defeat',''].includes(m.outcome)){t.outcome=m.outcome;t.outcomeMarked=!!m.outcome;}return {ok:true,value:t};}
+ if(m.type==='MATCH_DELETE')return {ok:true,value:{deleted:m.id}};
  if(m.type==='MATCH_GET')return {ok:true,value:m.id==='b'?matchB:matchA};
  if(m.type==='MATCHES_CLEAR')return {ok:true,value:{matches:0}};
  if(m.type==='MATCH_SET_OUTCOME'){const t=m.id==='b'?matchB:matchA;t.outcome=m.outcome;t.outcomeMarked=!!m.outcome;return {ok:true,value:t};}
@@ -33,10 +38,11 @@ window.chrome={permissions:{request:async()=>{if(deny&&!window.__grantNext)retur
  if(m.type==='STOP'){status.running=false;status.reason='manual';return {ok:true,value:status};}
  return {ok:false,error:'Unknown preview operation'};
 }}};`;
-const allowed=new Set(['popup.html','popup.css','popup.js','help.html','help.css','help.js','content.js']);
+const allowed=new Set(['popup.html','popup.css','popup.js','help.html','help.css','help.js','content.js','dashboard.html','dashboard.css','dashboard.js']);
 http.createServer(async(req,res)=>{
  const name=new URL(req.url,'http://localhost').pathname.slice(1)||'popup.html';
  if(name==='preview-mock.js'){res.setHeader('Content-Type','text/javascript');res.end(mock);return;}
  if(!allowed.has(name)){res.writeHead(404);res.end();return;}
- try{let body=await fs.readFile(new URL('../dist/'+name,import.meta.url));if(name==='popup.html'){body=body.toString().replace('<script type="module"','<script src="preview-mock.js"></script><script type="module"');if(new URL(req.url,'http://localhost').searchParams.has('overlay'))body=body.replace('</body>','<script src="content.js"></script></body>');}res.setHeader('Content-Type',name.endsWith('.html')?'text/html; charset=utf-8':name.endsWith('.css')?'text/css':'text/javascript');res.setHeader('Cache-Control','no-store');res.end(body);}catch{res.writeHead(404);res.end();}
+ try{let body=await fs.readFile(new URL('../dist/'+name,import.meta.url));if(name==='dashboard.html')body=body.toString().replace('<script type="module"','<script src="preview-mock.js"></script><script type="module"');
+ if(name==='popup.html'){body=body.toString().replace('<script type="module"','<script src="preview-mock.js"></script><script type="module"');if(new URL(req.url,'http://localhost').searchParams.has('overlay'))body=body.replace('</body>','<script src="content.js"></script></body>');}res.setHeader('Content-Type',name.endsWith('.html')?'text/html; charset=utf-8':name.endsWith('.css')?'text/css':'text/javascript');res.setHeader('Cache-Control','no-store');res.end(body);}catch{res.writeHead(404);res.end();}
 }).listen(4318,'127.0.0.1',()=>console.log('UI fixtures only: http://127.0.0.1:4318/ (populated), /?empty (lobby). No model or game connection.'));

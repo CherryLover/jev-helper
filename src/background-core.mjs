@@ -24,7 +24,11 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
   }
   const readLog=async()=>{await flushLog();const current=(await c.storage.local.get(LOG_KEY))[LOG_KEY];return Array.isArray(current)?current:[];};
   // Match records: one summary per finished autopilot session, kept for the popup's results panel.
-  const MATCHES_MAX=30;
+  const MATCHES_MAX=100;
+  const logKey=id=>`matchlog:${id}`;
+  const sanitizeMeta=e=>({pageTitle:String(e.pageTitle??'').slice(0,120),url:String(e.url??'').slice(0,300),me:e.me?{name:String(e.me.name??'').slice(0,40),country:e.me.country?String(e.me.country).slice(0,24):undefined}:null,
+    players:(Array.isArray(e.players)?e.players:[]).slice(0,16).map(p=>({name:String(p?.name??'').slice(0,40),country:p?.country?String(p.country).slice(0,24):undefined,allied:!!p?.allied,isAi:!!p?.isAi,combatant:!!p?.combatant,isObserver:!!p?.isObserver,defeated:!!p?.defeated})),
+    playerCount:Number.isFinite(e.playerCount)?e.playerCount:null,opponents:Number.isFinite(e.opponents)?e.opponents:null,map:e.map&&Number.isFinite(e.map.width)?{width:e.map.width,height:e.map.height}:null,startTick:Number.isFinite(e.startTick)?e.startTick:null,startTime:Number.isFinite(e.startTime)?e.startTime:null});
   const readMatches=async()=>{const list=(await c.storage.local.get('matches')).matches;return Array.isArray(list)?list:[];};
   // Text → base64 data URL for chrome.downloads; service workers have no object URLs.
   const dataUrl=text=>{const bytes=new TextEncoder().encode(text);let bin='';for(let i=0;i<bytes.length;i+=0x8000)bin+=String.fromCharCode(...bytes.subarray(i,i+0x8000));return 'data:application/json;base64,'+btoa(bin);};
@@ -46,14 +50,19 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
     const ledger=s.observation?.ledger??null;
     const credits=history.map(p=>p.credits).filter(Number.isFinite),seconds=history.map(p=>p.gameSeconds).filter(Number.isFinite);
     const settings=await getSettings();
-    const record={id:`${s.startedAt}-${tabId}`,startedAt:s.startedAt,endedAt:at,durationMs:at-s.startedAt,gameSeconds:seconds.length?Math.max(0,seconds.at(-1)-seconds[0]):null,
+    const record={id:`${s.startedAt}-${tabId}-${String(s.token??'').slice(0,8)}`,startedAt:s.startedAt,endedAt:at,durationMs:at-s.startedAt,gameSeconds:seconds.length?Math.max(0,seconds.at(-1)-seconds[0]):null,
       firstTick:s.firstTick??null,lastTick:s.lastTick??null,provider:s.provider??'jev',providerName:s.providerName??'Jev',model:s.model??'',objective:settings.objective??'',reason:String(reason??'').slice(0,40),outcome:s.outcome||(reason==='battle_ended'?'ended':''),ledger,
       decisions:s.decisions??0,requests:s.requests??0,failures:s.failures??0,acceptedActions:s.acceptedActions??0,waits:s.waits??0,inputTokens:s.inputTokens??0,latencyAvg:stats.latency.avg,latencyMax:stats.latency.max,
       credits:{start:credits[0]??null,end:credits.at(-1)??null,max:credits.length?Math.max(...credits):null,min:credits.length?Math.min(...credits):null},armyMax:s.armyMax??null,
       produced:stats.actions.acceptedProduce,actionsByType:stats.actions.byType,skippedReasons:stats.actions.skippedReasons,
       groups:Object.fromEntries(Object.entries(stats.groups).map(([id,g])=>[id,{asked:g.asked,waitRate:g.waitRate,top:Object.keys(g.choices)[0]??''}])),history};
+    record.meta=s.meta??null;record.label='';record.notes='';record.logEntries=window.length;
     record.reportFile=await saveReport(record,window,settings);
-    await serial(stateLocks,'matches',async()=>{const list=await readMatches();await c.storage.local.set({matches:[...list.filter(m=>m.id!==record.id),record].slice(-MATCHES_MAX)});}).catch(()=>{});
+    await serial(stateLocks,'matches',async()=>{
+      const list=await readMatches(),next=[...list.filter(m=>m.id!==record.id),record],dropped=next.slice(0,Math.max(0,next.length-MATCHES_MAX));
+      await c.storage.local.set({matches:next.slice(-MATCHES_MAX),[logKey(record.id)]:window});
+      if(dropped.length)await c.storage.local.remove(dropped.map(m=>logKey(m.id)));
+    }).catch(()=>{});
     await patch(tabId,current=>current?.startedAt===s.startedAt?{...current,matchRecorded:true,reportFile:record.reportFile}:current);
   }
   const getSession = async tabId => (await c.storage.session.get(key(tabId)))[key(tabId)];
@@ -205,6 +214,7 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
       }
       if(e.kind==='stop'){next.running=false;next.reason=e.reason;next.busyUntil=0;}
       if(e.kind==='outcome')next.outcome=String(e.result??'').slice(0,24);
+      if(e.kind==='meta')next.meta=sanitizeMeta(e);
       if(e.kind==='error')next.error=String(e.message).slice(0,240);
       return next;
     });
@@ -244,7 +254,20 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
     if(message.type==='LOG_CLEAR'){pending=[];clearTimeout(flushTimer);flushTimer=undefined;await c.storage.local.remove(LOG_KEY);return {entries:0};}
     if(message.type==='MATCHES_LIST'){const list=await readMatches();return {matches:list.map(({history,...m})=>({...m,samples:history?.length??0})).reverse()};}
     if(message.type==='MATCH_GET'){const m=(await readMatches()).find(m=>m.id===message.id);if(!m)throw new Error('未找到该场战绩。');return m;}
-    if(message.type==='MATCHES_CLEAR'){await c.storage.local.remove('matches');return {matches:0};}
+    if(message.type==='MATCHES_CLEAR'){const list=await readMatches();await c.storage.local.remove(['matches',...list.map(m=>logKey(m.id))]);return {matches:0};}
+    if(message.type==='MATCH_LOG_GET'){const entries=(await c.storage.local.get(logKey(message.id)))[logKey(message.id)];return {id:message.id,entries:Array.isArray(entries)?entries:[]};}
+    if(message.type==='MATCH_UPDATE'){
+      let updated;await serial(stateLocks,'matches',async()=>{const list=await readMatches();updated=list.find(m=>m.id===message.id);if(!updated)return;
+        if(typeof message.label==='string')updated.label=message.label.replace(/\s+/g,' ').trim().slice(0,80);
+        if(typeof message.notes==='string')updated.notes=message.notes.trim().slice(0,2000);
+        if(['victory','defeat',''].includes(message.outcome)){updated.outcome=message.outcome;updated.outcomeMarked=!!message.outcome;}
+        await c.storage.local.set({matches:list});});
+      if(!updated)throw new Error('未找到该场战绩。');return updated;
+    }
+    if(message.type==='MATCH_DELETE'){
+      let found=false;await serial(stateLocks,'matches',async()=>{const list=await readMatches();found=list.some(m=>m.id===message.id);await c.storage.local.set({matches:list.filter(m=>m.id!==message.id)});await c.storage.local.remove(logKey(message.id));});
+      if(!found)throw new Error('未找到该场战绩。');return {deleted:message.id};
+    }
     if(message.type==='MATCH_SET_OUTCOME'){
       const outcome=['victory','defeat',''].includes(message.outcome)?message.outcome:undefined;if(outcome===undefined)throw new Error('无效的对局结果。');
       let updated;await serial(stateLocks,'matches',async()=>{const list=await readMatches();updated=list.find(m=>m.id===message.id);if(!updated)return;updated.outcome=outcome;updated.outcomeMarked=!!outcome;await c.storage.local.set({matches:list});});

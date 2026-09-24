@@ -9,7 +9,7 @@ const body={state:{tick:100},groups:{tactics:{instructions:'Choose',criteria:{wa
 function mockChrome(shared){
   const data=shared??{local:{settings:{...DEFAULTS,apiKey:'test-only-secret'}},session:{}};
   const messages=[],scripts=[],listeners={};
-  const area=name=>({setAccessLevel:async x=>{listeners[name+'Access']=x;},get:async key=>structuredClone(key===null?data[name]:{[key]:data[name][key]}),set:async values=>Object.assign(data[name],structuredClone(values)),remove:async key=>{delete data[name][key];}});
+  const area=name=>({setAccessLevel:async x=>{listeners[name+'Access']=x;},get:async key=>structuredClone(key===null?data[name]:{[key]:data[name][key]}),set:async values=>Object.assign(data[name],structuredClone(values)),remove:async key=>{for(const k of Array.isArray(key)?key:[key])delete data[name][k];}});
   const c={storage:{local:area('local'),session:area('session')},runtime:{id:'test-extension',getURL:p=>'chrome-extension://test-extension/'+p,onMessage:{addListener:fn=>{listeners.message=fn;}}},permissions:{contains:async()=>true},tabs:{get:async()=>({id:7,url:sender.url,title:'王二火大'}),query:async()=>[{id:7,url:sender.url}],sendMessage:async(id,m)=>{messages.push(m);return {ok:true};},onUpdated:{addListener:fn=>{listeners.updated=fn;}},onRemoved:{addListener:fn=>{listeners.removed=fn;}}},action:{setBadgeText:async()=>{},setBadgeBackgroundColor:async()=>{}},scripting:{executeScript:async x=>{scripts.push(x);return [{documentId:sender.documentId,result:x.args?.[0]==='start'?{running:true}:x.args?.[0]==='stop'?{running:false}:{available:true,running:!!data.session['session:7']?.running}}];}}};
   return {c,data,messages,scripts,listeners};
 }
@@ -276,4 +276,38 @@ test('a finished match saves a battle report to Downloads/jev-reports unless dis
   assert.deepEqual(await x.app.handle({type:'SET_AUTO_REPORT',autoReport:false},extension),{autoReport:false});
   await x.app.handle({type:'START',tabId:7},extension);await x.app.handle({type:'STOP',tabId:7},extension);
   assert.equal(downloads.length,1,'no report when disabled');assert.equal((await x.app.handle({type:'GET_SETTINGS'},extension)).autoReport,false);
+});
+
+test('match metadata from the page is kept, each match stores its own log, and records can be labelled, deleted or cleared',async()=>{
+  const x=await setup(async()=>answer());
+  await x.app.handle({type:'EVENT',token:x.s.token,event:{kind:'meta',pageTitle:'王二火大 · 战役 3',url:'https://ra2web.github.io/#c3',me:{name:'Me',country:'America'},players:[{name:'Me',allied:true,combatant:true},{name:'AI',isAi:true,combatant:true}],playerCount:2,opponents:1,map:{width:120,height:100},startTick:1600,startTime:100,apiKey:'leak'}},sender);
+  await x.app.handle(x.request,sender);
+  await x.app.handle({type:'STOP',tabId:7},extension);
+  const {matches}=await x.app.handle({type:'MATCHES_LIST'},extension);const m=matches[0];
+  assert.equal(m.meta.pageTitle,'王二火大 · 战役 3');assert.equal(m.meta.players.length,2);assert.equal(m.meta.map.width,120);assert.equal(m.meta.opponents,1);assert.equal(m.meta.apiKey,undefined);
+  assert.equal(m.logEntries>=2,true);
+  const log=await x.app.handle({type:'MATCH_LOG_GET',id:m.id},extension);
+  assert.deepEqual(log.entries.map(e=>e.kind),['session','meta','decision','session']);assert.equal(log.entries[1].pageTitle,'王二火大 · 战役 3');
+  assert.ok(x.data.local[`matchlog:${m.id}`],'the per-match log is stored under its own key');
+  await assert.rejects(x.app.handle({type:'MATCH_LOG_GET',id:m.id},sender));await assert.rejects(x.app.handle({type:'MATCH_UPDATE',id:m.id,label:'x'},sender));await assert.rejects(x.app.handle({type:'MATCH_DELETE',id:m.id},sender));
+  const updated=await x.app.handle({type:'MATCH_UPDATE',id:m.id,label:'  第三关   首胜 ','notes':'note','outcome':'victory'},extension);
+  assert.equal(updated.label,'第三关 首胜');assert.equal(updated.notes,'note');assert.equal(updated.outcome,'victory');assert.equal(updated.outcomeMarked,true);
+  assert.equal((await x.app.handle({type:'MATCHES_LIST'},extension)).matches[0].label,'第三关 首胜');
+  await assert.rejects(x.app.handle({type:'MATCH_UPDATE',id:'nope',label:'x'},extension));
+  await x.app.handle({type:'START',tabId:7},extension);await x.app.handle({type:'STOP',tabId:7},extension);
+  const two=(await x.app.handle({type:'MATCHES_LIST'},extension)).matches;assert.equal(two.length,2);
+  await x.app.handle({type:'MATCH_DELETE',id:m.id},extension);
+  const one=(await x.app.handle({type:'MATCHES_LIST'},extension)).matches;assert.equal(one.length,1);assert.notEqual(one[0].id,m.id);assert.equal(x.data.local[`matchlog:${m.id}`],undefined,'deleting a match removes its log');
+  await assert.rejects(x.app.handle({type:'MATCH_DELETE',id:m.id},extension));
+  await x.app.handle({type:'MATCHES_CLEAR'},extension);
+  assert.equal((await x.app.handle({type:'MATCHES_LIST'},extension)).matches.length,0);assert.ok(!Object.keys(x.data.local).some(k=>k.startsWith('matchlog:')),'clearing removes every match log');
+});
+test('the history keeps at most 100 matches and drops the oldest logs with their records',async()=>{
+  const old=Array.from({length:100},(_,i)=>({id:`old-${i}`,startedAt:i,endedAt:i+1,durationMs:1,decisions:0}));
+  const shared={local:{settings:{...DEFAULTS,apiKey:'test-only-secret'},matches:old,...Object.fromEntries(old.map(m=>[`matchlog:${m.id}`,[{kind:'session'}]]))},session:{}};
+  const x=await setup(async()=>answer(),shared);
+  await x.app.handle({type:'STOP',tabId:7},extension);
+  const list=await x.app.handle({type:'MATCHES_LIST'},extension);
+  assert.equal(list.matches.length,100);assert.equal(list.matches.at(-1).id,'old-1','the oldest record was dropped');
+  assert.equal(x.data.local['matchlog:old-0'],undefined,'its log went with it');assert.ok(x.data.local['matchlog:old-1']);
 });

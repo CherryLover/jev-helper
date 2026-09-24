@@ -2,7 +2,7 @@ import {attachJevPlayer} from './player/werhd-jev-player.mjs';
 import {CHANNEL} from './shared.mjs';
 import {createObserver} from './observer.mjs';
 
-const VERSION='0.4.7';
+const VERSION='0.5.0';
 if(window.__werhdJevExtension?.version!==VERSION){
   window.__werhdJevExtension?.dispose?.();
   let player,token='',api;
@@ -44,6 +44,14 @@ if(window.__werhdJevExtension?.version!==VERSION){
       // Stop an older manually attached client to avoid two controllers commanding one player.
       window.werhdJev?.stop?.('extension_takeover');
       token=options.token;api=window.werhd;
+      // Match metadata the public API can give: players, map size, clock, plus the page's own title and URL.
+      // There is no map or mission name in the API, so the page title is the closest handle.
+      const meta=(()=>{try{
+        const players=(api.players?.()??[]).slice(0,16).map(p=>({name:String(p.name??'').slice(0,40),country:p.country?String(p.country).slice(0,24):undefined,allied:!!p.allied,isAi:!!p.isAi,combatant:!!p.combatant,isObserver:!!p.isObserver,defeated:!!p.defeated}));
+        const me=api.me();
+        return {pageTitle:String(document.title).slice(0,120),url:(location.origin+location.pathname+location.hash).slice(0,300),me:{name:String(me?.name??'').slice(0,40),country:me?.country?String(me.country).slice(0,24):undefined},players,playerCount:players.filter(p=>p.combatant&&!p.isObserver).length,opponents:players.filter(p=>!p.allied&&p.combatant&&!p.isObserver).length,map:api.map?.size?.(),startTick:api.tick(),startTime:api.time()};
+      }catch{return null;}})();
+      if(meta)post({type:'EVENT',event:{kind:'meta',...meta}});
       player=await attachJevPlayer(api,{maxDecisions:options.maxDecisions,autoCamera:options.autoCamera,objective:options.objective,requestDecision,onEvent:event=>{
         post({type:'EVENT',event});
       }});

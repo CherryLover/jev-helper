@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Jev 对局托管</title><link rel="stylesheet" href="popup.css"></head>
 <body>
-<header><div class="brand-mark">J</div><div class="brand"><p class="eyebrow" data-i18n="brand">王二火大 · PLAYER AI</p><h1 data-i18n="title">Jev 对局托管</h1></div><div class="header-right"><div class="language" aria-label="Language / 语言"><button id="lang-zh" aria-pressed="true">中</button><button id="lang-en" aria-pressed="false">EN</button></div><span class="version">0.3.0</span></div></header>
+<header><div class="brand-mark">J</div><div class="brand"><p class="eyebrow" data-i18n="brand">王二火大 · PLAYER AI</p><h1 data-i18n="title">Jev 对局托管</h1></div><div class="header-right"><div class="language" aria-label="Language / 语言"><button id="lang-zh" aria-pressed="true">中</button><button id="lang-en" aria-pressed="false">EN</button></div><span class="version">0.4.0</span></div></header>
 <main>
 <section class="battle">
  <div class="status-line"><span id="dot" class="dot"></span><strong id="status" data-i18n="connecting">正在连接游戏…</strong><span id="tick" class="tick"></span></div>
@@ -35,14 +35,24 @@
 <section id="panel-settings" class="panel" aria-labelledby="tab-settings" hidden>
 <form id="settings">
  <div class="section-title"><h2 data-i18n="settingsTitle">连接与控制</h2><button type="button" id="clear-key" class="text-button" data-i18n="clearKey" hidden>清除密钥</button></div>
+ <span class="field-label" id="provider-label" data-i18n="providerLabel">模型来源</span>
+ <div class="provider" role="radiogroup" aria-labelledby="provider-label"><button type="button" id="provider-jev" data-provider="jev" role="radio" aria-checked="true" data-i18n="providerJev">Jev 云端</button><button type="button" id="provider-local" data-provider="local" role="radio" aria-checked="false" data-i18n="providerLocal">本地 Laya</button></div>
+ <p id="provider-hint" class="hint"></p>
+ <div id="fields-jev" class="provider-fields">
  <label for="api-key" data-i18n="apiKey">JEV 密钥</label><input id="api-key" name="api-key" type="password" autocomplete="off" spellcheck="false">
  <button id="import-config" type="button" class="text-button import-button" data-i18n="import">从本地 .env 配置导入</button><input id="config-file" type="file" hidden>
  <label for="api-base" data-i18n="apiBase">API 地址</label><input id="api-base" type="url" spellcheck="false" required>
+ </div>
+ <div id="fields-local" class="provider-fields" hidden>
+ <label for="local-base" data-i18n="localBase">本地服务地址</label><input id="local-base" type="url" spellcheck="false" required>
+ <p class="hint" data-i18n="startHint"></p>
+ <label for="local-key" data-i18n="localKey">本地访问令牌（可选）</label><input id="local-key" name="local-key" type="password" autocomplete="off" spellcheck="false">
+ </div>
  <label for="hotkey" data-i18n="hotkey">托管快捷键</label><input id="hotkey" type="text" readonly aria-describedby="hotkey-hint"><p id="hotkey-hint" class="hint" data-i18n="hotkeyHint"></p>
  <label class="check"><input id="auto-camera" type="checkbox"><span data-i18n="autoCamera">自动跟随交战与基地镜头</span></label>
  <label class="check"><input id="show-overlay" type="checkbox" aria-describedby="overlay-hint"><span data-i18n="showOverlay">托管时显示悬浮状态窗</span></label><p id="overlay-hint" class="hint" data-i18n="overlayHint"></p>
- <details><summary data-i18n="advanced">更多设置</summary><div class="advanced"><label for="model" data-i18n="model">Jev 模型</label><input id="model" spellcheck="false"><label for="budget" data-i18n="budget">每局决策请求上限</label><input id="budget" type="number" min="1" max="10000"><p class="hint" data-i18n="budgetHint"></p></div></details>
- <button class="save" id="save" type="submit" data-i18n="save">保存设置</button><button class="save" id="test-connection" type="button" data-i18n="test">测试 Jev 连接</button><p class="privacy" data-i18n="privacy"></p>
+ <details><summary data-i18n="advanced">更多设置</summary><div class="advanced"><div class="provider-fields" id="advanced-jev"><label for="model" data-i18n="model">Jev 模型</label><input id="model" spellcheck="false"></div><div class="provider-fields" id="advanced-local" hidden><label for="local-model" data-i18n="localModel">本地模型名称</label><input id="local-model" spellcheck="false"><p class="hint" data-i18n="localModelHint"></p></div><label for="budget" data-i18n="budget">每局决策请求上限</label><input id="budget" type="number" min="1" max="10000"><p class="hint" data-i18n="budgetHint"></p></div></details>
+ <button class="save" id="save" type="submit" data-i18n="save">保存设置</button><button class="save" id="test-connection" type="button" data-i18n="test">测试模型连接</button><p class="privacy" data-i18n="privacy"></p>
 </form>
 </section>
 <details id="history"><summary><span data-i18n="history">最近执行记录</span><span id="failures"></span></summary><ol id="events"></ol></details>

@@ -10,9 +10,9 @@ export const messages = {
  officialWebsite:['王二火大','wannafire'],officialWebsiteHint:['访问王二火大官网','Visit the wannafire official website'],
  brand:['王二火大 · PLAYER AI','WannaFire · PLAYER AI'],title:['Jev 对局托管','Jev Autopilot'],
  battlefield:['战场','Battlefield'],trends:['趋势','Trends'],settings:['设置','Settings'],
- connecting:['正在连接游戏…','Connecting…'],running:['Jev 正在托管','Jev is in control'],stopped:['托管已停止','Autopilot stopped'],ready:['等待开启托管','Ready for autopilot'],switchGame:['请切换到游戏页面','Open a game tab'],game:['王二火大 · 在线对局','WannaFire · Online match'],
+ connecting:['正在连接游戏…','Connecting…'],running:['{name} 正在托管','{name} is in control'],stopped:['托管已停止','Autopilot stopped'],ready:['等待开启托管','Ready for autopilot'],switchGame:['请切换到游戏页面','Open a game tab'],game:['王二火大 · 在线对局','WannaFire · Online match'],
  decisions:['模型回答','Model replies'],credits:['对局资金','Credits'],latency:['响应耗时','Response time'],start:['开启托管','Start autopilot'],stop:['停止','Stop'],
- idleMission:['进入对局后，Jev 将接管当前玩家。','Enter a match, then let Jev take control.'],thinking:['观察战况，等待下一次决策。','Reading the battlefield and planning the next move.'],
+ idleMission:['进入对局后，{name} 将接管当前玩家。','Enter a match, then let {name} take control.'],thinking:['观察战况，等待下一次决策。','Reading the battlefield and planning the next move.'],
  situation:['实时战场态势','Battlefield awareness'],live:['实时 · 只读观测','LIVE · read-only'],stale:['最后观测 · 非实时','Last observation · not live'],noBattle:['进入对局后显示战场态势。无需开启托管。','Enter a match to view the battlefield. Autopilot can stay off.'],
  clear:['未发现基地威胁','No visible base threats'],pressure:['基地正在受到威胁','Base under threat'],suppressed:['基地持续受压','Base under sustained pressure'],critical:['核心建筑危险','Core structures in danger'],
  clearDetail:['仅根据当前视野判断，迷雾内情况未知。','Based on current vision. Enemies in fog remain unknown.'],pressureDetail:['检测到可威胁基地的敌军，留意交战与反制。','Visible enemies threaten the base. Watch defenses and interception.'],
@@ -26,16 +26,22 @@ export const messages = {
  accepted:['已受理动作 {n}','Accepted actions {n}'],waits:['等待选择 {n}','Wait choices {n}'],
  creditsLegend:['现有资金','Current credits'],freeLegend:['扣除队列剩余投入','After remaining queue cost'],economyHint:['资金余额及可自由投入估算，不代表收入或利润。','Balance and estimated uncommitted credits, not income or profit.'],
  chartEmpty:['等待真实对局采样','Waiting for match samples'],oneSample:['已记录首个采样点','First sample recorded'],historyNote:['本次开启托管时重新计数；关闭弹窗后托管仍记录。','Counters reset on Start. Active autopilot keeps recording with this popup closed.'],
- settingsTitle:['连接与控制','Connection & controls'],clearKey:['清除密钥','Clear key'],apiKey:['JEV 密钥','JEV API key'],keySaved:['已保存；留空保留，输入可替换','Saved; leave blank to keep, enter to replace'],keyEmpty:['输入你的 JEV API key','Enter your JEV API key'],
+ settingsTitle:['连接与控制','Connection & controls'],clearKey:['清除密钥','Clear key'],apiKey:['JEV 密钥','JEV API key'],
+ providerLabel:['模型来源','Model source'],providerJev:['Jev 云端','Jev cloud'],providerLocal:['本地 Laya','Local Laya'],
+ providerJevHint:['TypeSafe 托管的 Jev 模型，需要 JEV 密钥，按请求计费。','TypeSafe-hosted Jev. Needs a JEV key; billed per request.'],
+ providerLocalHint:['本机运行的 Laya 模型（MLX）。先启动本地服务，再保存并测试连接；不产生 API 费用。','Laya running on this Mac (MLX). Start the local server first, then save and test. No API fees.'],
+ localBase:['本地服务地址','Local server URL'],localKey:['本地访问令牌（可选）','Local access token (optional)'],localKeySaved:['已保存；留空保留，输入可替换','Saved; leave blank to keep, enter to replace'],localKeyEmpty:['本地服务未设置令牌时留空','Leave blank unless the local server requires a token'],
+ localModel:['本地模型名称','Local model name'],localModelHint:['仅作标识，本地服务会返回实际加载的模型。','A label only. The local server reports the model it loaded.'],
+ startHint:['启动本地服务：在 jev-helper 目录运行 npm run laya','Start the local server: run npm run laya in the jev-helper directory'],keySaved:['已保存；留空保留，输入可替换','Saved; leave blank to keep, enter to replace'],keyEmpty:['输入你的 JEV API key','Enter your JEV API key'],
  import:['从本地 .env 配置导入','Import a local .env file'],apiBase:['API 地址','API URL'],hotkey:['托管快捷键','Autopilot shortcut'],hotkeyHint:['点此输入框，按下组合键；在游戏页内切换开启 / 停止。','Click the field and press a shortcut. Toggles control while the game has focus.'],autoCamera:['自动跟随交战与基地镜头','Follow battles and the base with the camera'],advanced:['更多设置','More settings'],model:['Jev 模型','Jev model'],budget:['每局决策请求上限','Decision request limit per session'],budgetHint:['达到上限会停止托管；这是请求次数，不是金额上限。','Stops at this request count. This is not a spending limit.'],
- save:['保存设置','Save settings'],test:['测试 Jev 连接','Test Jev connection'],privacy:['密钥仅保存在本机扩展中，发送至你配置的 API。无需本地代理。','Your key stays in local extension storage and is sent only to your configured API. No local proxy needed.'],
+ save:['保存设置','Save settings'],test:['测试模型连接','Test model connection'],privacy:['密钥仅保存在本机扩展中，只发送至当前选中的模型服务。','Your key stays in local extension storage and is sent only to the selected model service.'],
  history:['最近执行记录','Recent activity'],noEvents:['暂无执行记录','No activity yet'],failures:['{n} 次异常','{n} errors'],footer:['公开玩家 API · 独立策略','Public player API · Local strategy'],help:['使用说明 ↗','Help ↗'],
- imported:['已读取 Jev 配置，请检查 API 地址并保存。','Configuration imported. Review the API URL and save.'],saveFirst:['请先保存修改后的设置。','Save your changes first.'],testing:['正在测试 Jev 连接…','Testing the Jev connection…'],tested:['Jev 连接成功 · {ms} ms。可进入对局开启托管。','Connected to Jev · {ms} ms. Enter a match to start autopilot.'],hotkeyChanged:['快捷键已修改，保存后在游戏页面生效。','Shortcut changed. Save to apply it in the game.'],saved:['设置已保存。回到游戏页面即可一键托管。','Settings saved. Return to the game to start autopilot.'],keyCleared:['已清除保存的密钥。','Saved key cleared.'],connectionFailed:['连接失败','Connection failed'],toastOn:['Jev 托管已开启','Jev autopilot started'],toastOff:['Jev 托管已停止','Jev autopilot stopped'],
+ imported:['已读取 Jev 配置，请检查 API 地址并保存。','Configuration imported. Review the API URL and save.'],saveFirst:['请先保存修改后的设置。','Save your changes first.'],testing:['正在测试 {name} 连接…','Testing the {name} connection…'],tested:['{name} 连接成功 · {ms} ms{model}。可进入对局开启托管。','Connected to {name} · {ms} ms{model}. Enter a match to start autopilot.'],hotkeyChanged:['快捷键已修改，保存后在游戏页面生效。','Shortcut changed. Save to apply it in the game.'],saved:['设置已保存。回到游戏页面即可一键托管。','Settings saved. Return to the game to start autopilot.'],keyCleared:['已清除保存的密钥。','Saved key cleared.'],connectionFailed:['连接失败','Connection failed'],toastOn:['{name} 托管已开启','{name} autopilot started'],toastOff:['{name} 托管已停止','{name} autopilot stopped'],
  manual:['托管已停止，可随时重新开启。','Autopilot stopped. You can start it again at any time.'],decision_budget:['已达到本局决策次数上限。','The decision request limit has been reached.'],battle_ended:['对局已结束。','The match has ended.'],victory:['对局已结束。','The match has ended.'],defeated_or_observer:['玩家已战败或进入观察状态。','Player defeated or in observer mode.'],page_disconnected:['页面控制器已断开，请重新进入对局。','Game controller disconnected. Re-enter the match.'],settings_changed:['连接设置已变更，请重新开启托管。','Connection settings changed. Start autopilot again.'],simulation_not_advancing:['游戏暂停或长时间未推进，托管已停止。','The game paused or stopped advancing. Autopilot stopped.'],key_removed:['密钥已清除，托管已停止。','Key cleared. Autopilot stopped.'],
  event_start:['开始托管','Autopilot started'],event_stop:['停止托管','Autopilot stopped'],event_action:['决策动作','Decision action'],event_place:['放置建筑','Place structure'],event_camera:['镜头移动','Camera moved'],event_micro:['战术指令','Tactical command'],event_error:['执行异常','Execution error'],event_stale:['战况过期，跳过','Stale state; skipped'],event_outcome:['对局结束','Match ended'],event_other:['状态更新','Status update'],
  acceptedLabel:['已受理','Accepted'],skippedLabel:['未执行','Skipped'],waitLabel:['等待','Wait'],
  helpTitle:['把当前对局交给 Jev。','Let Jev play your WannaFire match.'],helpIntro:['先开始一场游戏，再点击「开启托管」。无需本地服务器或开发者控制台。','Start a match, then select Start autopilot. No local server or developer console needed.'],
- help1:['在设置中填写 JEV 密钥，也可从本地 .env 导入。默认 API 为 https://api.typesafe.ai/v1；自定义服务须实现 /systemone 候选选择协议。','Enter your JEV key in Settings, or import a local .env file. The default API is https://api.typesafe.ai/v1. Custom services must support the /systemone choice protocol.'],
+ help1:['在设置中选择模型来源。Jev 云端需填写 JEV 密钥，也可从本地 .env 导入，默认 API 为 https://api.typesafe.ai/v1；本地 Laya 需先在 jev-helper 目录运行 npm run laya 启动本地服务（默认 http://127.0.0.1:8742/v1），无需密钥。自定义服务须实现 /systemone 候选选择协议。','Choose a model source in Settings. Jev cloud needs a JEV key (or import a local .env file); the default API is https://api.typesafe.ai/v1. Local Laya needs the local server started with npm run laya in the jev-helper directory (default http://127.0.0.1:8742/v1) and no key. Custom services must support the /systemone choice protocol.'],
  help2:['点击快捷键输入框，按下组合键并保存。默认 Alt+Shift+J，只在游戏页面拥有焦点、且未在输入文字时生效。','Record and save your shortcut. Alt+Shift+J is the default. It works when the game has focus and you are not typing in a field.'],
  help3:['进入在线对局后，点击开启托管或使用快捷键。停止按钮或同一快捷键可交还控制。关闭弹窗不会停止托管。','Enter an online match and start via the popup or shortcut. Stop or press the same shortcut to take back control. Closing the popup does not stop autopilot.'],
  help4:['离开对局、战败、达到请求上限或认证 / 计费错误会停止托管；不会自动接管下一局。','Autopilot stops on leaving the match, defeat, the request limit, or authentication/billing errors. It never takes over the next match automatically.'],
@@ -65,7 +71,7 @@ const errors = {
  '未找到当前游戏标签页。':'Current game tab not found.',
  '请输入有效的 API 地址。':'Enter a valid API URL.',
  'API 地址不能包含账号、查询参数或片段。':'The API URL must not contain credentials, query parameters or a fragment.',
- 'API 地址须使用 HTTPS；本机调试地址可使用 HTTP。':'Use HTTPS for the API; HTTP is allowed for localhost.',
+ 'API 地址须使用 HTTPS；本机或局域网地址可使用 HTTP。':'Use HTTPS for the API; HTTP is allowed for this machine and private LAN addresses.',
  '快捷键需要 Ctrl、Alt 或 Meta 加一个字母、数字或 F1–F12。':'Use Ctrl, Alt or Meta with a letter, digit or F1–F12.',
  '模型名称无效。':'Invalid model name.',
  '每局决策上限应为 1–10000。':'Request limit must be between 1 and 10000.',
@@ -88,9 +94,10 @@ const errors = {
 };
 export function errorText(language,message){
  if(language!=='en')return message;
- if(errors[message])return errors[message];
+ const name=message?.match(/^(Jev|Laya)\b/)?.[1]??'Jev',normalized=name==='Jev'?message:message.replace(name,'Jev');
+ if(errors[normalized])return errors[normalized].replace(/\bJev\b/g,name);
  const http=message?.match(/HTTP (\d{3})/);
- if(http){const code=http[1];return `Jev HTTP ${code}: `+({'401':'check your API key.','402':'check your account balance or billing.','403':'check key permissions and the API URL.','429':'rate or quota limit reached. Try again later.'}[code]??'request failed.');}
+ if(http){const code=http[1];return `${name} HTTP ${code}: `+({'401':'check your API key.','402':'check your account balance or billing.','403':'check key permissions and the API URL.','429':'rate or quota limit reached. Try again later.'}[code]??'request failed.');}
  return /[\u3400-\u9fff]/.test(message??'')?'Operation failed. Check your connection and settings.':message;
 }
 

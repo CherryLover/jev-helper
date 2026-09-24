@@ -1,4 +1,4 @@
-import {DEFAULTS, supportedGame, apiEndpoint, originPattern, validateSettings, publicSettings, prepareQuestions, validateAnswer, httpError} from './shared.mjs';
+import {DEFAULTS, supportedGame, apiEndpoint, originPattern, validateSettings, publicSettings, prepareQuestions, validateAnswer, httpError, activeProvider, authHeaders} from './shared.mjs';
 import {summarize,recordObservation} from './telemetry.mjs';
 
 export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = () => crypto.randomUUID()} = {}) {
@@ -11,7 +11,7 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
   const key = tabId => `session:${tabId}`;
   const getSession = async tabId => (await c.storage.session.get(key(tabId)))[key(tabId)];
   const getSettings = async () => ({...DEFAULTS,...(await c.storage.local.get('settings')).settings});
-  const contentConfig = s => ({hotkey:s.hotkey,language:s.language,showOverlay:s.showOverlay});
+  const contentConfig = s => ({hotkey:s.hotkey,language:s.language,showOverlay:s.showOverlay,providerName:activeProvider(s).name});
   const notifyOverlay = async s => {
     if(s?.documentId)await c.tabs.sendMessage(s.tabId,{type:'OVERLAY_CHANGED',running:s.running},{documentId:s.documentId}).catch(()=>{});
   };
@@ -60,9 +60,9 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
   async function start(tabId) {
     const tab=await c.tabs.get(tabId);
     if(!supportedGame(tab.url))throw new Error('请先切换到王二火大的游戏标签页。');
-    const config=validateSettings(await getSettings());
-    if(!config.apiKey)throw new Error('请先填写并保存 JEV 密钥。');
-    if(!await c.permissions.contains({origins:[originPattern(config.apiBase)]}))throw new Error('请在插件中保存设置，授权访问所填 API 地址。');
+    const config=validateSettings(await getSettings()),provider=activeProvider(config);
+    if(provider.requiresKey && !provider.apiKey)throw new Error('请先填写并保存 JEV 密钥。');
+    if(!await c.permissions.contains({origins:[originPattern(provider.apiBase)]}))throw new Error('请在插件中保存设置，授权访问所填 API 地址。');
     const old=await getSession(tabId);
     if(old?.running) {
       const live=await pageCall(tabId,'status',null,old.documentId).catch(()=>null);
@@ -74,7 +74,7 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
     await c.scripting.executeScript({target:{tabId,documentIds:[documentId]},world:'MAIN',files:['page.js']});
     const status=await pageCall(tabId,'status',null,documentId);
     if(!status?.available)throw new Error(status?.error || '请先进入一场正在运行的对局，再开启托管。');
-    const session={tabId,token:uuid(),documentId,origin:new URL(tab.url).origin,running:true,startedAt:now(),updatedAt:now(),requests:0,decisions:0,failures:0,inputTokens:0,outputTokens:0,busyUntil:0,events:[],reason:'',error:'',maxDecisions:config.maxDecisions};
+    const session={tabId,token:uuid(),documentId,origin:new URL(tab.url).origin,provider:provider.id,providerName:provider.name,running:true,startedAt:now(),updatedAt:now(),requests:0,decisions:0,failures:0,inputTokens:0,outputTokens:0,busyUntil:0,events:[],reason:'',error:'',maxDecisions:config.maxDecisions};
     await patch(tabId,()=>session);
     try {
       await c.tabs.sendMessage(tabId,{type:'BIND_SESSION',token:session.token},{documentId});
@@ -89,9 +89,9 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
     const tabId=sender.tab?.id;
     const questions=prepareQuestions(message.body);
     const auth=await authorize(sender,message.token);
-    const config=await getSettings();
+    const config=await getSettings(),provider=activeProvider(config);
     // URL and credentials are read exclusively from trusted extension settings.
-    const endpoint=apiEndpoint(config.apiBase);
+    const endpoint=apiEndpoint(provider.apiBase);
     if(!await c.permissions.contains({origins:[originPattern(endpoint)]}))throw new Error('API 访问权限已被撤销，请重新保存设置。');
     try { await patch(tabId,s=>{
       if(!s?.running || s.token!==auth.token)throw new Error('托管会话已停止。');
@@ -105,17 +105,17 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
     const abort=new AbortController();inflight.set(tabId,abort);
     const timeout=setTimeout(()=>abort.abort(),8000),started=now();
     try {
-      const response=await fetchImpl(endpoint,{method:'POST',headers:{Authorization:`Bearer ${config.apiKey}`,'Content-Type':'application/json'},body:JSON.stringify({model:config.model,state:message.body.state,questions}),signal:abort.signal,redirect:'error',credentials:'omit',referrerPolicy:'no-referrer'});
-      if(!response.ok){const error=new Error(httpError(response.status));error.status=response.status;throw error;}
-      const raw=await response.text();if(raw.length>256000)throw new Error('Jev 响应过大，已拒绝处理。');
-      const result={...validateAnswer(JSON.parse(raw),questions),latencyMs:now()-started};
+      const response=await fetchImpl(endpoint,{method:'POST',headers:authHeaders(provider),body:JSON.stringify({model:provider.model,state:message.body.state,questions}),signal:abort.signal,redirect:'error',credentials:'omit',referrerPolicy:'no-referrer'});
+      if(!response.ok){const error=new Error(httpError(response.status,provider.name));error.status=response.status;throw error;}
+      const raw=await response.text();if(raw.length>256000)throw new Error(`${provider.name} 响应过大，已拒绝处理。`);
+      const result={...validateAnswer(JSON.parse(raw),questions,provider.name),latencyMs:now()-started};
       await authorize(sender,message.token);
-      await patch(tabId,s=>s?.token===auth.token?{...s,decisions:s.decisions+1,inputTokens:s.inputTokens+result.usage.input_tokens,outputTokens:s.outputTokens+result.usage.output_tokens,latencyMs:result.latencyMs,lastTick:message.body.state.tick,lastChoices:Object.fromEntries(Object.entries(result.answers).map(([id,a])=>[id,a.choice])),error:'',updatedAt:now()}:s);
+      await patch(tabId,s=>s?.token===auth.token?{...s,decisions:s.decisions+1,inputTokens:s.inputTokens+result.usage.input_tokens,outputTokens:s.outputTokens+result.usage.output_tokens,latencyMs:result.latencyMs,lastTick:message.body.state.tick,lastChoices:Object.fromEntries(Object.entries(result.answers).map(([id,a])=>[id,a.choice])),model:result.model||s.model||provider.model,error:'',updatedAt:now()}:s);
       return result;
     } catch(e) {
       const current=await getSession(tabId);
       if(current?.running && current.token===auth.token){
-        const error=e.name==='AbortError'?'Jev 请求超时，请检查网络或 API 服务。':e.status?e.message:e.message?.startsWith('Jev')?e.message:'模型请求未完成，请检查 API 地址、网络或响应格式。';
+        const error=e.name==='AbortError'?`${provider.name} 请求超时，请检查网络或 API 服务。`:e.status?e.message:e.message?.startsWith(provider.name)?e.message:'模型请求未完成，请检查 API 地址、网络或响应格式。';
         await patch(tabId,s=>s?.token===auth.token?{...s,failures:s.failures+1,error,updatedAt:now()}:s);
         if([401,402,403].includes(e.status))await stop(tabId,`http_${e.status}`);
         await badge(tabId,'!', '#bd5656');
@@ -187,32 +187,36 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
       if(probing)throw new Error('连接测试正在进行，请稍候。');
       probing=true;
       const abort=new AbortController(),timer=setTimeout(()=>abort.abort(),8000),started=now();
+      let name='Jev';
       try{
-        const config=validateSettings(await getSettings());
-        if(!config.apiKey)throw new Error('请先填写并保存 JEV 密钥。');
-        if(!await c.permissions.contains({origins:[originPattern(config.apiBase)]}))throw new Error('请先保存设置并授权 API 访问。');
+        const config=validateSettings(await getSettings()),provider=activeProvider(config);
+        name=provider.name;
+        if(provider.requiresKey && !provider.apiKey)throw new Error('请先填写并保存 JEV 密钥。');
+        if(!await c.permissions.contains({origins:[originPattern(provider.apiBase)]}))throw new Error('请先保存设置并授权 API 访问。');
         const questions={connection:{type:'choice',instructions:'Connection check only. Select ok. No game actions will be executed.',criteria:{ok:'Connection accepted'}}};
-        const response=await fetchImpl(apiEndpoint(config.apiBase),{method:'POST',headers:{Authorization:`Bearer ${config.apiKey}`,'Content-Type':'application/json'},body:JSON.stringify({model:config.model,state:{purpose:'extension_connection_check'},questions}),signal:abort.signal,redirect:'error',credentials:'omit',referrerPolicy:'no-referrer'});
-        if(!response.ok)throw new Error(httpError(response.status));
-        const raw=await response.text();if(raw.length>256000)throw new Error('Jev 响应过大。');
-        validateAnswer(JSON.parse(raw),questions);
-        return {latencyMs:now()-started};
-      }catch(e){throw new Error(e.name==='AbortError'?'Jev 连接测试超时。':/^(Jev|请先)/.test(e.message)?e.message:'Jev 连接失败，请检查地址、网络或响应格式。');}
+        const response=await fetchImpl(apiEndpoint(provider.apiBase),{method:'POST',headers:authHeaders(provider),body:JSON.stringify({model:provider.model,state:{purpose:'extension_connection_check'},questions}),signal:abort.signal,redirect:'error',credentials:'omit',referrerPolicy:'no-referrer'});
+        if(!response.ok)throw new Error(httpError(response.status,name));
+        const raw=await response.text();if(raw.length>256000)throw new Error(`${name} 响应过大。`);
+        const result=validateAnswer(JSON.parse(raw),questions,name);
+        return {latencyMs:now()-started,provider:provider.id,providerName:name,model:result.model};
+      }catch(e){throw new Error(e.name==='AbortError'?`${name} 连接测试超时。`:new RegExp(`^(${name}|请先)`).test(e.message)?e.message:`${name} 连接失败，请检查地址、网络或响应格式。`);}
       finally{probing=false;clearTimeout(timer);}
     }
     if(message.type==='SAVE_SETTINGS'){
       const prior=await getSettings(),input=message.settings??{};
       if(input.apiBase && new URL(apiEndpoint(input.apiBase)).origin!==new URL(apiEndpoint(prior.apiBase)).origin && !input.apiKey?.trim())throw new Error('更换 API 服务时，请重新输入该服务的密钥。');
-      const config=validateSettings({...input,apiKey:input.apiKey?.trim()||prior.apiKey},prior);
-      if(!await c.permissions.contains({origins:[originPattern(config.apiBase)]}))throw new Error('API 访问权限未获授权。');
-      if(config.apiKey!==prior.apiKey || config.apiBase!==prior.apiBase || config.model!==prior.model){for(const s of Object.values(await c.storage.session.get(null)))if(s?.running)await stop(s.tabId,'settings_changed');}
+      const config=validateSettings({...input,apiKey:input.apiKey?.trim()||prior.apiKey,localKey:input.localKey?.trim()||prior.localKey},prior);
+      const before=activeProvider(prior),after=activeProvider(config);
+      if(!await c.permissions.contains({origins:[originPattern(after.apiBase)]}))throw new Error('API 访问权限未获授权。');
+      if(before.id!==after.id || after.apiKey!==before.apiKey || after.apiBase!==before.apiBase || after.model!==before.model){for(const s of Object.values(await c.storage.session.get(null)))if(s?.running)await stop(s.tabId,'settings_changed');}
       await c.storage.local.set({settings:config});
       await broadcastConfig(config);
       return publicSettings(config);
     }
     if(message.type==='CLEAR_KEY'){
+      const field=message.provider==='local'?'localKey':'apiKey';
       for(const s of Object.values(await c.storage.session.get(null)))if(s?.running)await stop(s.tabId,'key_removed');
-      await c.storage.local.set({settings:{...await getSettings(),apiKey:''}});return {hasKey:false};
+      await c.storage.local.set({settings:{...await getSettings(),[field]:''}});return field==='localKey'?{hasLocalKey:false}:{hasKey:false};
     }
     const tabId=message.tabId;
     if(!Number.isInteger(tabId))throw new Error('未找到当前游戏标签页。');

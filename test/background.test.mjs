@@ -132,3 +132,40 @@ test('display preference applies immediately, persists, and never stops or start
  await restarted.handle({type:'SET_OVERLAY',showOverlay:true},extension);assert.equal((await restarted.getSession(7)).running,false);
  assert.equal((await restarted.handle({type:'OVERLAY_STATUS'},sender)).running,false);
 });
+
+test('local source: no key required, no Authorization header, local endpoint, and switching sources stops autopilot',async()=>{
+  let request;const local={local:{settings:{...DEFAULTS,provider:'local',apiKey:'',localKey:''}},session:{}};
+  const x=await setup(async(url,options)=>{request={url,options};return new Response(JSON.stringify({answers:{tactics:{type:'choice',choice:'wait',probabilities:{wait:.7,attack:.3}}},model:'laya-multilingual-mlx',usage:{input_tokens:900,output_tokens:0}}));},local);
+  assert.equal(x.s.provider,'local');assert.equal(x.s.providerName,'Laya');
+  const result=await x.app.handle(x.request,sender);
+  assert.equal(request.url,'http://127.0.0.1:8742/v1/systemone');assert.equal(request.options.headers.Authorization,undefined);assert.equal(request.options.redirect,'error');
+  assert.equal(JSON.parse(request.options.body).model,'laya');assert.equal(result.answers.tactics.choice,'wait');
+  const s=await x.app.getSession(7);assert.equal(s.decisions,1);assert.equal(s.model,'laya-multilingual-mlx');assert.equal(s.inputTokens,900);
+  const status=await x.app.handle({type:'GET_STATUS',tabId:7},extension);assert.equal(status.providerName,'Laya');assert.equal(status.model,'laya-multilingual-mlx');
+  const overlay=await x.app.handle({type:'OVERLAY_STATUS'},sender);assert.equal(overlay.providerName,'Laya');assert.doesNotMatch(JSON.stringify(overlay),/8742|apiBase|localBase/);
+  // The optional local token is sent when configured, and clearing it never touches the Jev key.
+  await x.app.handle({type:'SAVE_SETTINGS',settings:{provider:'local',localKey:'local-token',apiKey:'jev-secret'}},extension);
+  assert.equal((await x.app.getSession(7)).running,false);assert.equal((await x.app.getSession(7)).reason,'settings_changed');
+  await x.app.handle({type:'START',tabId:7},extension);const token=(await x.app.getSession(7)).token;
+  await x.app.handle({...x.request,token},sender);assert.equal(request.options.headers.Authorization,'Bearer local-token');
+  await x.app.handle({type:'CLEAR_KEY',provider:'local'},extension);assert.equal(x.data.local.settings.localKey,'');assert.equal(x.data.local.settings.apiKey,'jev-secret');
+  await x.app.handle({type:'START',tabId:7},extension);assert.equal((await x.app.getSession(7)).running,true);
+  await x.app.handle({type:'SAVE_SETTINGS',settings:{provider:'jev'}},extension);
+  assert.equal((await x.app.getSession(7)).running,false);
+  const settings=await x.app.handle({type:'GET_SETTINGS'},extension);assert.equal(settings.provider,'jev');assert.equal(settings.localBase,'http://127.0.0.1:8742/v1');assert.doesNotMatch(JSON.stringify(settings),/jev-secret|local-token/);
+});
+test('the Jev source still requires a key and the connection probe follows the selected source',async()=>{
+  const x=mockChrome({local:{settings:{...DEFAULTS,apiKey:''}},session:{}});
+  const urls=[];const app=createBackground(x.c,{fetchImpl:async(url,options)=>{urls.push([url,options.headers.Authorization]);return new Response(JSON.stringify({answers:{connection:{type:'choice',choice:'ok'}},model:'laya-multilingual-mlx'}));}});
+  await assert.rejects(app.handle({type:'START',tabId:7},extension),/JEV 密钥/);
+  await assert.rejects(app.handle({type:'TEST_CONNECTION'},extension),/JEV 密钥/);assert.equal(urls.length,0);
+  await app.handle({type:'SAVE_SETTINGS',settings:{provider:'local'}},extension);
+  const probe=await app.handle({type:'TEST_CONNECTION'},extension);
+  assert.deepEqual(urls,[['http://127.0.0.1:8742/v1/systemone',undefined]]);assert.equal(probe.providerName,'Laya');assert.equal(probe.model,'laya-multilingual-mlx');
+  const down=createBackground(x.c,{fetchImpl:async()=>{throw new TypeError('Failed to fetch');}});
+  await assert.rejects(down.handle({type:'TEST_CONNECTION'},extension),/Error: Laya 连接失败/);
+  await app.handle({type:'START',tabId:7},extension);const s=await app.getSession(7);
+  const failing=createBackground(x.c,{fetchImpl:async()=>new Response('',{status:503})});
+  await assert.rejects(failing.handle({type:'DECIDE',token:s.token,body},sender),/Error: Laya 请求失败（HTTP 503）/);
+  assert.equal((await failing.getSession(7)).running,true);assert.equal((await failing.getSession(7)).failures,1);
+});

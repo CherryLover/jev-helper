@@ -5,6 +5,8 @@ import {drawChart,drawPositions} from './charts.mjs';
 const $=id=>document.getElementById(id);
 let tabId,config={...DEFAULTS,hasKey:false},lastStatus,dirty=false,refreshing=false,activePanel='battlefield',noticeState;
 const tr=(key,vars)=>t(config.language,key,vars);
+const providerName=()=>config.providerName||'Jev';
+const selectedProvider=()=>$('provider-local').getAttribute('aria-checked')==='true'?'local':'jev';
 const rpc=async message=>{const r=await chrome.runtime.sendMessage(message);if(!r?.ok)throw new Error(r?.error||'插件后台未响应。');return r.value;};
 const format=n=>typeof n==='number'&&Number.isFinite(n)?Math.round(n).toLocaleString(config.language):'—';
 function notice(text,success=false,key,vars){noticeState={text,success,key,vars};$('notice').textContent=key?tr(key,vars):errorText(config.language,text);$('notice').classList.toggle('success',success);$('notice').hidden=!text&&!key;}
@@ -15,13 +17,20 @@ function translate(){
  $('lang-en').setAttribute('aria-pressed',config.language==='en');$('lang-zh').setAttribute('aria-pressed',config.language!=='en');
  $('official-site').href=officialWebsiteUrl(config.language);$('official-site').title=tr('officialWebsiteHint');
  $('help-link').href=`help.html?lang=${config.language}`;
- keyPlaceholder();
+ keyPlaceholder();showProvider(selectedProvider());
  if(noticeState)notice(noticeState.text,noticeState.success,noticeState.key,noticeState.vars);
  if(lastStatus)displayStatus(lastStatus);
 }
-function keyPlaceholder(){$('api-key').placeholder=tr(config.hasKey?'keySaved':'keyEmpty');$('clear-key').hidden=!config.hasKey;}
+function keyPlaceholder(){$('api-key').placeholder=tr(config.hasKey?'keySaved':'keyEmpty');$('local-key').placeholder=tr(config.hasLocalKey?'localKeySaved':'localKeyEmpty');$('clear-key').hidden=!(selectedProvider()==='local'?config.hasLocalKey:config.hasKey);}
+// Only the selected source's fields are shown; both sets stay saved.
+function showProvider(provider){
+ for(const btn of document.querySelectorAll('[data-provider]'))btn.setAttribute('aria-checked',btn.dataset.provider===provider);
+ for(const id of ['jev','local']){$(`fields-${id}`).hidden=id!==provider;$(`advanced-${id}`).hidden=id!==provider;}
+ $('provider-hint').textContent=tr(provider==='local'?'providerLocalHint':'providerJevHint');
+ $('clear-key').hidden=!(provider==='local'?config.hasLocalKey:config.hasKey);
+}
 function displayConfig(){
- $('api-base').value=config.apiBase;$('model').value=config.model;$('hotkey').value=config.hotkey;$('budget').value=config.maxDecisions;$('auto-camera').checked=config.autoCamera;$('show-overlay').checked=config.showOverlay;keyPlaceholder();
+ $('api-base').value=config.apiBase;$('model').value=config.model;$('local-base').value=config.localBase;$('local-model').value=config.localModel;showProvider(config.provider);$('hotkey').value=config.hotkey;$('budget').value=config.maxDecisions;$('auto-camera').checked=config.autoCamera;$('show-overlay').checked=config.showOverlay;keyPlaceholder();
 }
 function renderAwareness(s){
  const o=s.observation;$('awareness').hidden=!o;$('no-battle').hidden=!!o;
@@ -54,10 +63,10 @@ function eventText(e){
  return `${name}${e.choice?' · '+e.choice:''}`;
 }
 function displayStatus(s){
- lastStatus=s;$('status').textContent=tr(s.running?'running':s.error||s.reason?'stopped':s.supported?'ready':'switchGame');$('dot').classList.toggle('on',s.running);
+ lastStatus=s;$('status').textContent=tr(s.running?'running':s.error||s.reason?'stopped':s.supported?'ready':'switchGame',{name:s.providerName||providerName()});$('dot').classList.toggle('on',s.running);
  $('game').textContent=config.language==='en'?tr(s.supported?'game':'switchGame'):s.title||tr('switchGame');$('tick').textContent=s.lastTick!=null?`TICK ${s.lastTick}`:'';
  $('decisions').textContent=format(s.decisions??0);$('credits').textContent=format(s.credits);$('latency').textContent=s.latencyMs!=null?`${format(s.latencyMs)}ms`:'—';
- $('mission').textContent=s.running?(config.language==='en'?tr('thinking'):s.mission||tr('thinking')):tr(messages[s.reason]?s.reason:'idleMission');
+ $('mission').textContent=s.running?(config.language==='en'?tr('thinking'):s.mission||tr('thinking')):tr(messages[s.reason]?s.reason:'idleMission',{name:providerName()});
  $('start').disabled=!s.supported||s.running||dirty;$('stop').disabled=!s.running;$('failures').textContent=s.failures?tr('failures',{n:s.failures}):'';
  $('events').replaceChildren(...(s.events??[]).slice(0,8).map(e=>{const li=document.createElement('li');li.textContent=`${new Date(e.at).toLocaleTimeString(config.language,{hour12:false})} · ${eventText(e)}`;return li;}));
  if(!s.events?.length){const li=document.createElement('li');li.textContent=tr('noEvents');$('events').append(li);}
@@ -73,6 +82,7 @@ for(const btn of document.querySelectorAll('[data-panel]'))btn.addEventListener(
 for(const [id,language]of [['lang-zh','zh-CN'],['lang-en','en']])$(id).addEventListener('click',async()=>{
  try{await rpc({type:'SET_LANGUAGE',language});config.language=language;translate();}catch(e){notice(e.message);}
 });
+for(const btn of document.querySelectorAll('[data-provider]'))btn.addEventListener('click',()=>{if(selectedProvider()===btn.dataset.provider)return;showProvider(btn.dataset.provider);dirty=true;if(lastStatus)displayStatus(lastStatus);});
 $('import-config').addEventListener('click',()=>$('config-file').click());
 $('config-file').addEventListener('change',async()=>{
  try{
@@ -83,8 +93,8 @@ $('config-file').addEventListener('change',async()=>{
  }catch(e){notice(e.message);}finally{$('config-file').value='';}
 });
 $('test-connection').addEventListener('click',async()=>{
- if(dirty){notify('saveFirst');return;}$('test-connection').disabled=true;notify('testing');
- try{const result=await rpc({type:'TEST_CONNECTION'});notify('tested',true,{ms:result.latencyMs});}catch(e){notice(e.message);}finally{$('test-connection').disabled=false;}
+ if(dirty){notify('saveFirst');return;}$('test-connection').disabled=true;notify('testing',false,{name:providerName()});
+ try{const result=await rpc({type:'TEST_CONNECTION'});notify('tested',true,{name:result.providerName||providerName(),ms:result.latencyMs,model:result.model?` · ${result.model}`:''});}catch(e){notice(e.message);}finally{$('test-connection').disabled=false;}
 });
 $('show-overlay').addEventListener('change',async()=>{
  const input=$('show-overlay');input.disabled=true;
@@ -96,12 +106,12 @@ $('hotkey').addEventListener('keydown',e=>{if(e.key==='Tab')return;e.preventDefa
 $('settings').addEventListener('submit',async e=>{
  e.preventDefault();
  try{
-  const input={language:config.language,apiKey:$('api-key').value.trim(),apiBase:$('api-base').value,model:$('model').value,hotkey:$('hotkey').value,autoCamera:$('auto-camera').checked,showOverlay:$('show-overlay').checked,maxDecisions:Number($('budget').value)};validateSettings(input);
-  if(!await chrome.permissions.request({origins:[originPattern(input.apiBase)]}))throw new Error('未获得 API 访问授权，设置未保存。');
-  config=await rpc({type:'SAVE_SETTINGS',settings:input});$('api-key').value='';dirty=false;displayConfig();notify('saved',true);await refresh();
+  const input={language:config.language,provider:selectedProvider(),apiKey:$('api-key').value.trim(),apiBase:$('api-base').value,model:$('model').value,localKey:$('local-key').value.trim(),localBase:$('local-base').value,localModel:$('local-model').value,hotkey:$('hotkey').value,autoCamera:$('auto-camera').checked,showOverlay:$('show-overlay').checked,maxDecisions:Number($('budget').value)};validateSettings(input);
+  if(!await chrome.permissions.request({origins:[originPattern(input.provider==='local'?input.localBase:input.apiBase)]}))throw new Error('未获得 API 访问授权，设置未保存。');
+  config=await rpc({type:'SAVE_SETTINGS',settings:input});$('api-key').value='';$('local-key').value='';dirty=false;displayConfig();notify('saved',true);await refresh();
  }catch(error){notice(error.message);}
 });
-$('clear-key').addEventListener('click',async()=>{try{await rpc({type:'CLEAR_KEY'});config.hasKey=false;$('api-key').value='';keyPlaceholder();notify('keyCleared',true);await refresh();}catch(e){notice(e.message);}});
+$('clear-key').addEventListener('click',async()=>{try{const provider=selectedProvider();await rpc({type:'CLEAR_KEY',provider});if(provider==='local'){config.hasLocalKey=false;$('local-key').value='';}else{config.hasKey=false;$('api-key').value='';}keyPlaceholder();notify('keyCleared',true);await refresh();}catch(e){notice(e.message);}});
 for(const [id,type]of [['start','START'],['stop','STOP']])$(id).addEventListener('click',async()=>{
  $(id).disabled=true;notice('');try{await rpc({type,tabId});await refresh();}catch(e){notice(e.message);$(id).disabled=false;}
 });

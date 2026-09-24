@@ -687,7 +687,9 @@ export function candidateGroups(api, catalog, snapshot, memory) {
   const objective = trackObjective(api, catalog, memory, base?.tile);
   const objectiveTarget = objective && !objective.done ? objective : undefined;
   state.objectiveTarget = objective ? { id: objective.id, name: objective.name, label: objective.label, x: objective.x, y: objective.y, lastSeenTick: objective.lastSeen, visible: !!objective.visible, done: !!objective.done, captured: !!objective.captured }
-    : memory.objective ? { found: false, keywords: memory.objectiveKeys?.words ?? [] } : null;
+    : memory.objective ? { found: false, keywords: memory.objectiveKeys?.words ?? [],
+      // What the visible buildings are actually called, so an unmatched objective can be fixed from a report.
+      seen: [...new Set((api.units("hostile") ?? []).filter((u) => u.type === api.ObjectType.Building).map((u) => `${catalog[u.name]?.label ?? u.name}/${u.name}`))].slice(0, 30) } : null;
   // Small local models read only the start of a question: objective and readiness go first, the
   // escalation note is one short sentence at the end.
   const where = (t) => `(${t.x},${t.y})`;

@@ -20,6 +20,9 @@ export function stateSummary(state = {}) {
     inventory: Object.fromEntries(Object.entries(state.inventory ?? {}).slice(0, 48).map(([k, u]) => [short(k, 20), number(u?.count) ?? 0])),
     investment: state.strategy?.investment ? { category: short(state.strategy.investment.category, 24), name: short(state.strategy.investment.name, 24) } : null,
     ready: state.forceReadiness ? state.forceReadiness.ready === true : null, readyReason: short(state.forceReadiness?.reason, 160),
+    ...(state.objectiveTarget ? { objective: state.objectiveTarget.found === false
+      ? { found: false, seen: (state.objectiveTarget.seen ?? []).slice(0, 30).map((n) => short(n, 60)) }
+      : { found: true, id: number(state.objectiveTarget.id), label: short(state.objectiveTarget.label, 60), name: short(state.objectiveTarget.name, 40), done: !!state.objectiveTarget.done } } : {}),
     escalation: number(state.combatAssessment?.level), recentLost: number(state.combatAssessment?.recentLost), recentKilled: number(state.combatAssessment?.recentKilled),
     hints: Object.fromEntries(Object.entries(state.recentChoices ?? {}).filter(([, h]) => h.stale || h.removed).map(([id, h]) => [short(id, 24), { streak: number(h.streak), lostSince: number(h.lostSince), killedSince: number(h.killedSince), removed: h.removed === true }])),
   };

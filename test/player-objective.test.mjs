@@ -115,7 +115,8 @@ test('protect / capture objectives never become attack orders; an unseen objecti
   search.memory.objective = '摧毁五角大楼';
   const snap = collectState(search.api, catalog), groups = candidateGroups(search.api, catalog, snap, search.memory);
   assert.equal(snap.state.forceReadiness.ready, true);
-  assert.deepEqual(snap.state.objectiveTarget, { found:false, keywords:['pentagon'] });
+  assert.equal(snap.state.objectiveTarget.found, false); assert.deepEqual(snap.state.objectiveTarget.keywords, ['pentagon']);
+  assert.ok(Array.isArray(snap.state.objectiveTarget.seen), 'visible building names are listed for diagnosis');
   assert.match(groups.scouting.instructions, /^SEARCHING FOR THE OBJECTIVE \(pentagon\)/);
   assert.ok(choices(groups.scouting).length && choices(groups.scouting).every(k => /^Find the objective: /.test(groups.scouting.criteria[k])));
 });
@@ -441,4 +442,14 @@ test('repeating the current attack reaches only new or idle units; soldiers alre
     w.setTick(4000); w.api._tick({}); await new Promise(r => setTimeout(r, 5));
     assert.equal(w.calls.filter(c => c[0] === 'attack').length, 2);
   } finally { player.stop('manual'); }
+});
+
+test('an unmatched objective records the names of the buildings in view, and the decision log keeps them', async () => {
+  const { stateSummary } = await import('../src/logbook.mjs');
+  const w = world({ own:[...home(), ...squad(12)], enemies:[unit(801,'EBARR',2,62,60)], offers:{} });
+  w.memory.objective = 'destroy the Kremlin';
+  const snapshot = collectState(w.api, catalog); candidateGroups(w.api, catalog, snapshot, w.memory);
+  assert.equal(snapshot.state.objectiveTarget.found, false);
+  assert.ok(snapshot.state.objectiveTarget.seen.includes('Allied Barracks/EBARR'));
+  assert.deepEqual(stateSummary(snapshot.state).objective, { found:false, seen:['Allied Barracks/EBARR'] });
 });

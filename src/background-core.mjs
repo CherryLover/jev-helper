@@ -29,7 +29,18 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
     if(!response.ok){const detail=openai?serviceError(raw):'';const error=new Error(httpError(response.status,provider.name)+(detail?` ${detail}`:''));error.status=response.status;throw error;}
     if(raw.length>(openai?512000:256000))throw new Error(`${provider.name} 响应过大，已拒绝处理。`);
     let parsed;try{parsed=JSON.parse(raw);}catch{throw new Error(`${provider.name} 返回的内容无法解析。`);}
-    return openai?parseChatResponse(parsed,questions,provider.name):validateAnswer(parsed,questions,provider.name);
+    if(!openai)return validateAnswer(parsed,questions,provider.name);
+    try{return parseChatResponse(parsed,questions,provider.name);}
+    catch(e){
+      // Without a forced function call some models now and then answer in prose. One retry asking for
+      // a bare JSON object; a second failure counts as a normal failed request.
+      if(provider.mode==='json' || !/无法解析/.test(e.message))throw e;
+      const retry=await send(buildChatRequest({model:provider.model,mode:'json',state,questions}));
+      const text=await retry.text();
+      if(!retry.ok){const detail=serviceError(text);const error=new Error(httpError(retry.status,provider.name)+(detail?` ${detail}`:''));error.status=retry.status;throw error;}
+      let again;try{again=JSON.parse(text);}catch{throw e;}
+      return parseChatResponse(again,questions,provider.name);
+    }
   }
   const needsModel = provider => provider.id==='openai' && !provider.model;
   // Decision log: buffered in memory, flushed in batches so frequent events do not rewrite storage each time.

@@ -61,8 +61,13 @@ test('with no production at all, whatever exists attacks immediately; a stalled 
   const snap=collectState(bare.api,catalog);const groups=candidateGroups(bare.api,catalog,snap,bare.memory);
   assert.equal(snap.state.forceReadiness.ready,true);assert.equal(snap.state.forceReadiness.threshold,1);assert.match(snap.state.forceReadiness.reason,/nothing can be produced/);
   assert.ok(groups.tactics.actions.assault_900);
-  const stalled=world({ own:[...base,unit(2,'FACTORY',2,22,22),unit(10,'TANK',7,25,25),unit(11,'TANK',7,26,25)], enemies:[pentagon], offers:{3:[{name:'TANK',type:7}]}, tick:10000 });
-  stalled.memory.forceProgress={count:2,tick:10000-FORCE_STALL_TICKS};
+  // Two survivors of a stalled force do not attack while production works: that is feeding units in.
+  const trickle=world({ own:[...base,unit(2,'FACTORY',2,22,22),unit(10,'TANK',7,25,25),unit(11,'TANK',7,26,25)], enemies:[pentagon], offers:{3:[{name:'TANK',type:7}]}, tick:10000 });
+  trickle.memory.forceProgress={count:2,tick:10000-FORCE_STALL_TICKS};
+  const s1=collectState(trickle.api,catalog);const g1=candidateGroups(trickle.api,catalog,s1,trickle.memory);
+  assert.equal(s1.state.forceReadiness.ready,false);assert.ok(!g1.tactics.actions.assault_900,'no assault with two units');
+  const stalled=world({ own:[...base,unit(2,'FACTORY',2,22,22),unit(10,'TANK',7,25,25),unit(11,'TANK',7,26,25),unit(12,'TANK',7,27,25),unit(13,'TANK',7,28,25)], enemies:[pentagon], offers:{3:[{name:'TANK',type:7}]}, tick:10000 });
+  stalled.memory.forceProgress={count:4,tick:10000-FORCE_STALL_TICKS};
   const s2=collectState(stalled.api,catalog);const g2=candidateGroups(stalled.api,catalog,s2,stalled.memory);
   assert.equal(s2.state.forceReadiness.ready,true);assert.match(s2.state.forceReadiness.reason,/has not grown/);assert.ok(g2.tactics.actions.assault_900);
   const growing=world({ own:[...base,unit(2,'FACTORY',2,22,22),unit(10,'TANK',7,25,25),unit(11,'TANK',7,26,25),unit(12,'TANK',7,27,25)], enemies:[pentagon], offers:{3:[{name:'TANK',type:7}]}, tick:10000 });

@@ -1,6 +1,6 @@
 import { isAirSupport } from './werhd-jev-strategy.mjs';
 import { isCapturable } from './werhd-jev-catalog.mjs';
-export const ATTACK_STUCK_TICKS = 2700, CAPTURE_RESENDS = 3;
+export const ATTACK_STUCK_TICKS = 2700, CAPTURE_RESENDS = 3, SIEGE_RANGE = 8, BASE_GARRISON_SPARE = 8;
 // All tactical choices and spatial searches live in the ordinary player script.
 const distance = (a, b) => Math.hypot(a.rx - b.rx, a.ry - b.ry);
 const idle = (unit, memory, tick) => unit.isIdle && tick - (memory.specialOrders?.get(unit.id)?.tick ?? -10000) > 450;
@@ -71,13 +71,39 @@ export function specialGroups(api, catalog, snapshot, memory, groups) {
       posture(`mobilize_${u.id}`, `Pack up ${r.label} #${u.id} into ${r.undeploysInto} to join the mobile force; no visible enemy is in its firing range.`,
         { type: 'special', kind: 'undeploy_morph', ids: [u.id], order: { type: api.OrderType.DeploySelected } });
   }
-  const garrison = group('garrison', 'Use nearby empty civilian buildings as defensive strongpoints. Preserve at least two mobile infantry. Evacuate a severely damaged occupied building before its occupants are lost. Do not repeatedly interrupt infantry already moving to enter.');
+  const garrison = group('garrison', 'Use empty civilian buildings as strongpoints. SIEGE options put infantry into a building within reach of an enemy defense (pillbox, tower) so it is destroyed from cover; clear each defense on its own side of the road instead of pushing past it. Base strongpoints only matter when the base is threatened. Preserve at least two mobile infantry. Evacuate a severely damaged occupied building before its occupants are lost. Do not repeatedly interrupt infantry already moving to enter.');
+  const occupiers = infantry.filter((u) => catalog[u.name]?.occupier && idle(u, memory, tick) && u.id !== memory.scoutId);
+  // Base strongpoints tie infantry down at home; offer them only under threat or with plenty to spare.
+  const baseGarrisonWanted = snapshot.state.baseUnderAttack || (snapshot.state.nearbyEnemyCount ?? 0) > 0 || occupiers.length >= BASE_GARRISON_SPARE;
+  // Siege from cover: for each visible enemy defense, the empty civilian building closest to it that
+  // is within reach. Every defense gets its own option, so both sides of a road can be taken.
+  const assessment = snapshot.state.combatAssessment;
+  const attacksFailing = (assessment?.level ?? 0) >= 1 || !!assessment?.staleAttack;
+  const houses = [...civilians, ...buildings].filter((u) => u.garrison?.canOccupy && !u.garrison.count && !own.has(u.id));
+  const center = occupiers.length ? { rx: occupiers.reduce((n, u) => n + u.tile.rx, 0) / occupiers.length, ry: occupiers.reduce((n, u) => n + u.tile.ry, 0) / occupiers.length } : base.tile;
+  const enemyDefenses = enemies.filter((e) => e.type === api.ObjectType.Building && (catalog[e.name]?.isBaseDefense || (catalog[e.name]?.weapon?.damage ?? 0) > 0))
+    .sort((a, b) => distance(a.tile, center) - distance(b.tile, center)).slice(0, 4);
+  const sieged = new Set();
+  for (const defense of enemyDefenses) {
+    const range = catalog[defense.name]?.weapon?.range ?? 0;
+    const house = houses.filter((h) => !sieged.has(h.id) && distance(h.tile, defense.tile) <= SIEGE_RANGE)
+      .sort((a, b) => distance(a.tile, defense.tile) - distance(b.tile, defense.tile))[0];
+    if (!house) continue;
+    const crew = [...occupiers].sort((a, b) => distance(a.tile, house.tile) - distance(b.tile, house.tile))
+      .slice(0, Math.min(house.garrison.capacity, 5, Math.max(0, infantry.length - 2)));
+    if (crew.length < 2) continue;
+    sieged.add(house.id);
+    const label = catalog[defense.name]?.label ?? defense.name;
+    garrison(`siege_${house.id}`, `${attacksFailing ? 'PRIORITY ' : ''}SIEGE ${label} #${defense.id} at (${defense.tile.rx},${defense.tile.ry}): garrison ${crew.length} infantry into building #${house.id} at (${house.tile.rx},${house.tile.ry}), ${Math.round(distance(house.tile, defense.tile))} tiles from it (its weapon range ${range}). Garrisoned infantry fire from cover and outlast the defense${attacksFailing ? '; attacks in the open are failing' : ''}.`,
+      { type: 'special', kind: 'garrison', ids: crew.map((u) => u.id), targetId: house.id,
+        order: { type: api.OrderType.Occupy, target: { objectId: house.id } }, auto: attacksFailing ? 2 : undefined });
+  }
   for (const building of [...civilians, ...buildings].filter((u) => u.garrison).slice(0, 10)) {
     if (own.has(building.id)) {
       if (building.garrison.count && building.hitPoints / building.maxHitPoints < 0.45)
         garrison(`evacuate_${building.id}`, `Evacuate ${building.garrison.count} infantry from badly damaged building #${building.id}.`,
           { type: 'special', kind: 'evacuate_garrison', ids: [building.id], order: { type: api.OrderType.DeploySelected } });
-    } else if (building.garrison.canOccupy && !building.garrison.count && (distance(base.tile, building.tile) < 28 || (memory.forwardPoint && distance(memory.forwardPoint, building.tile) <= 14))) {
+    } else if (building.garrison.canOccupy && !building.garrison.count && !sieged.has(building.id) && ((baseGarrisonWanted && distance(base.tile, building.tile) < 28) || (memory.forwardPoint && distance(memory.forwardPoint, building.tile) <= 14 && distance(base.tile, building.tile) >= 28))) {
       const forward = !(distance(base.tile, building.tile) < 28);
       const candidates = infantry.filter((u) => catalog[u.name]?.occupier && idle(u, memory, tick) && u.id !== memory.scoutId)
         .sort((a, b) => distance(a.tile, building.tile) - distance(b.tile, building.tile))

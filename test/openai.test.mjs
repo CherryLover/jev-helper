@@ -243,3 +243,22 @@ test('a service that refuses a forced function call is retried once with tool_ch
   const auto = buildChatRequest({model:'m', state:{}, questions, toolChoice:'auto'});
   assert.equal(auto.tool_choice, 'auto'); assert.match(auto.messages[0].content, /Always answer by calling submit_choices/);
 });
+
+test('a prose answer to a function-call request is retried once as JSON, and only a second failure counts', async () => {
+  const calls = [];
+  const mock = mockChrome({...openaiSettings, openaiModel:'deepseek-flash'});
+  let proseAgain = false;
+  const app = createBackground(mock.c, {fetchImpl:async (url, options) => {
+    const sent = JSON.parse(options.body); calls.push(sent.response_format ? 'json' : 'tools');
+    if (!sent.response_format || proseAgain) return new Response(JSON.stringify({model:'deepseek-flash', choices:[{message:{content:'I would attack the base now.'}}]}));
+    return new Response(JSON.stringify({model:'deepseek-flash', choices:[{message:{content:'{"tactics":{"choice":"attack","reason":"push"}}'}}], usage:{prompt_tokens:10, completion_tokens:5}}));
+  }});
+  await app.ready; await app.handle({type:'START', tabId:7}, extension);
+  const s = await app.getSession(7);
+  const result = await app.handle({type:'DECIDE', token:s.token, body}, sender);
+  assert.equal(result.answers.tactics.choice, 'attack'); assert.deepEqual(calls, ['tools', 'json']);
+  assert.equal((await app.getSession(7)).failures, 0);
+  proseAgain = true; await new Promise(r => setTimeout(r, 5));
+  await assert.rejects(app.handle({type:'DECIDE', token:s.token, body}, sender), /无法解析/);
+  assert.deepEqual(calls.slice(2), ['tools', 'json']); assert.equal((await app.getSession(7)).failures, 1);
+});

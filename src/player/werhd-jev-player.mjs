@@ -123,7 +123,7 @@ function roleOf(rule) {
 
 // Recent answers per decision group, with the loss / kill totals at the time, so a repeated choice
 // that produced nothing can be shown back to the model and demoted.
-export const RECENT_LIMIT = 8, STALE_REPEATS = 4;
+export const RECENT_LIMIT = 8, STALE_REPEATS = 4, STALE_REMOVE = 6;
 export function rememberChoice(memory, group, choice, execution, tick, auto = false) {
   const recent = (memory.recent ??= {})[group] ??= [];
   const l = memory.ledger;
@@ -138,14 +138,17 @@ export function historyHints(groups, memory, state, assessment) {
     let streak = 0, first = recent.at(-1);
     for (let i = recent.length - 1; i >= 0 && recent[i].choice === recent.at(-1).choice; i--) { streak++; first = recent[i]; }
     const choice = recent.at(-1).choice, lostSince = lostNow - first.lost, killedSince = killedNow - first.killed;
-    const stale = choice !== "wait" && streak >= STALE_REPEATS && killedSince === 0 && g.actions[choice];
+    // No progress: nothing destroyed, or more lost than destroyed (feeding units in one at a time
+    // still kills a few enemies, which used to hide the pattern).
+    const stale = choice !== "wait" && streak >= STALE_REPEATS && (killedSince === 0 || lostSince > killedSince) && g.actions[choice];
     const summary = recent.slice(-6).map(r => `${r.choice}${r.auto ? "*" : ""}${r.accepted ? "" : r.reason === "wait" ? "" : "(" + (r.reason || "skipped") + ")"}`).join(", ");
     out[id] = { recent: summary, streak, lostSince, killedSince, stale: !!stale };
     if (!(level >= 1 || stale)) continue;
     g.instructions += ` RECENT ANSWERS HERE: ${summary}. The last ${streak} answer${streak === 1 ? "" : "s"} ${streak === 1 ? "was" : "were"} "${choice}"; since then we lost ${lostSince} and destroyed ${killedSince}. Repeating an answer that produced nothing is unlikely to work: prefer a different option unless the situation has changed.`;
     if (stale) {
       const others = Object.keys(g.actions).filter(k => k !== "wait" && k !== choice);
-      if (level >= 2 && others.length && choice !== "defend_base") { delete g.actions[choice]; delete g.criteria[choice]; out[id].removed = true; }
+      // Small local models ignore the STALE text, so a long losing streak is taken off the menu for a turn.
+      if ((level >= 2 || streak >= STALE_REMOVE) && others.length && choice !== "defend_base") { delete g.actions[choice]; delete g.criteria[choice]; out[id].removed = true; }
       else if (g.criteria[choice]) g.criteria[choice] = `STALE ×${streak} (chosen ${streak} times, no progress): ${g.criteria[choice]}`;
     }
   }
@@ -234,7 +237,7 @@ export function escalationAdvice(a) {
 // - vehicles not producible: every armed ground unit counts toward the same threshold
 // - nothing producible at all: attack with whatever exists
 // - force stopped growing for a long time (no factory, no money, unit cap): attack with what exists
-export const FORCE_STALL_TICKS = 2700;
+export const FORCE_STALL_TICKS = 2700, MIN_ATTACK_UNITS = 4;
 export function forceReadiness(api, catalog, state, army, tanks, memory) {
   const tick = api.tick();
   const vehicleType = api.QueueType?.Vehicles ?? 3, infantryType = api.QueueType?.Infantry ?? 2;
@@ -259,7 +262,8 @@ export function forceReadiness(api, catalog, state, army, tanks, memory) {
   const escalationNote = level ? ` (escalation ${level}: attacks were failing, so ${threshold} are required)` : "";
   let ready = false, reason;
   if (committedAttack) { ready = true; reason = "an attack is already committed"; }
-  else if (stalled && (level === 0 || tick - escalatedAt >= COMBAT_WINDOW_TICKS * 2)) { ready = true; reason = `the force has not grown for ${stalledTicks} ticks; attack with the ${combatUnits} units that exist`; }
+  // A stalled force still attacks, but never as a trickle of one or two survivors while production works.
+  else if (stalled && combatUnits >= MIN_ATTACK_UNITS && (level === 0 || tick - escalatedAt >= COMBAT_WINDOW_TICKS * 2)) { ready = true; reason = `the force has not grown for ${stalledTicks} ticks; attack with the ${combatUnits} units that exist`; }
   else if (canBuildVehicles) {
     ready = tanks.length >= threshold && aaSatisfied;
     reason = ready ? `${tanks.length} ground combat vehicles fielded${escalationNote}` : !aaSatisfied ? `air threats observed and only ${state.mobileAntiAirCount}/${ATTACK_AA_ESCORTS} mobile anti-air escorts` : `${tanks.length}/${threshold} ground combat vehicles; vehicles are producible${escalationNote}`;
@@ -645,7 +649,10 @@ export function candidateGroups(api, catalog, snapshot, memory) {
     (combatWeapon(b,catalog).range??0)-(combatWeapon(a,catalog).range??0));
   if (active.length) {
     const ids = active.map((u) => u.id);
-    const ready = readiness.ready;
+    // Ready on paper but only a handful of units free to move: gather first instead of feeding them in.
+    const tooFew = readiness.canBuildAnything && ids.length < MIN_ATTACK_UNITS;
+    const ready = readiness.ready && !tooFew;
+    if (tooFew && readiness.ready) state.forceReadiness = { ...readiness, ready: false, reason: `only ${ids.length} units are free to attack; gather at least ${MIN_ATTACK_UNITS} before striking` };
     if (!ready && !threatening.length && rallySite && memory.enemyBuildings.size)
       tactics(
         "assemble_force",
@@ -682,8 +689,14 @@ export function candidateGroups(api, catalog, snapshot, memory) {
         (a, b) =>
           Number(!!catalog[b.name]?.yard) - Number(!!catalog[a.name]?.yard),
       );
+    // Besides the two headline targets, every nearby defense gets its own option: a road lined with
+    // pillboxes on both sides needs both sides cleared, not one side hit over and over.
+    const center = active.length ? { rx: active.reduce((n, u) => n + u.tile.rx, 0) / active.length, ry: active.reduce((n, u) => n + u.tile.ry, 0) / active.length } : base?.tile;
+    const gap = (u) => center ? Math.hypot(u.tile.rx - center.rx, u.tile.ry - center.ry) : 0;
+    const defenses = targets.filter((e) => catalog[e.name]?.isBaseDefense || (catalog[e.name]?.weapon?.damage ?? 0) > 0).sort((a, b) => gap(a) - gap(b));
+    const offered = [...new Set([...targets.slice(0, 2), ...defenses.slice(0, 3)])];
     if (ready && !threatening.length)
-      for (const enemy of targets.slice(0, 2))
+      for (const enemy of offered)
         tactics(
           `assault_${enemy.id}`,
           `Assault visible enemy ${catalog[enemy.name]?.label ?? enemy.name} at (${enemy.tile.rx},${enemy.tile.ry}) with ${ids.length} units.`,

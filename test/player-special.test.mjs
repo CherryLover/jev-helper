@@ -41,7 +41,8 @@ const api = {
     tile: (x, y) => x === 18 && y === 10 ? { rx: x, ry: y, bridge: { id: 90 }, landType: 7 } : undefined },
 };
 const snapshot = { raw: { units: own, buildings: own.filter((u) => u.type === 2), army: own.filter((u) => u.type === 3 || u.name === 'TANK'), enemies: [enemy], base },
-  state: { self: { credits: 10000 }, harvesters: 3, economy: { factories: 1 }, airThreatCount: 0 } };
+  // The enemy tank on the bridge is 7 tiles from the yard: an enemy near the base.
+  state: { self: { credits: 10000 }, harvesters: 3, economy: { factories: 1 }, airThreatCount: 0, nearbyEnemyCount: 1 } };
 const memory = {};
 const groups = {};
 specialGroups(api, catalog, snapshot, memory, groups);

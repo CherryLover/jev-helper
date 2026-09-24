@@ -8,7 +8,7 @@ const tr=(key,vars)=>t(config.language,key,vars);
 const providerName=()=>config.providerName||'Jev';
 let testState={state:'idle'};
 // Inline field errors (Material style): red outline plus a message under the input.
-const FIELD_IDS={apiKey:'api-key',apiBase:'api-base',model:'model',localKey:'local-key',localBase:'local-base',localModel:'local-model',hotkey:'hotkey',maxDecisions:'budget'};
+const FIELD_IDS={apiKey:'api-key',apiBase:'api-base',model:'model',localKey:'local-key',localBase:'local-base',localModel:'local-model',hotkey:'hotkey',maxDecisions:'budget',objective:'objective'};
 const fieldMessages={};
 function fieldError(field,message){
  const id=FIELD_IDS[field];if(!id)return false;const input=$(id),slot=$(`err-${id}`);
@@ -85,7 +85,7 @@ function showProvider(provider){
 function displayConfig(){
  $('api-base').value=config.apiBase;$('model').value=config.model;$('local-base').value=config.localBase;$('local-model').value=config.localModel;
  // Stored keys are shown masked; the eye button reveals them on demand.
- $('api-key').value=config.apiKey??'';$('local-key').value=config.localKey??'';showProvider(config.provider);$('hotkey').value=config.hotkey;$('budget').value=config.maxDecisions;$('auto-camera').checked=config.autoCamera;$('show-overlay').checked=config.showOverlay;keyPlaceholder();
+ $('api-key').value=config.apiKey??'';$('local-key').value=config.localKey??'';$('objective').value=config.objective??'';showProvider(config.provider);$('hotkey').value=config.hotkey;$('budget').value=config.maxDecisions;$('auto-camera').checked=config.autoCamera;$('show-overlay').checked=config.showOverlay;keyPlaceholder();
 }
 function renderAwareness(s){
  const o=s.observation;$('awareness').hidden=!o;$('no-battle').hidden=!!o;
@@ -172,7 +172,7 @@ $('hotkey').addEventListener('keydown',e=>{if(e.key==='Tab')return;e.preventDefa
 $('settings').addEventListener('submit',async e=>{
  e.preventDefault();
  try{
-  const input={language:config.language,provider:selectedProvider(),apiKey:$('api-key').value.trim(),apiBase:$('api-base').value.trim(),model:$('model').value.trim(),localKey:$('local-key').value.trim(),localBase:$('local-base').value.trim(),localModel:$('local-model').value.trim(),hotkey:$('hotkey').value,autoCamera:$('auto-camera').checked,showOverlay:$('show-overlay').checked,maxDecisions:$('budget').value.trim()===''?NaN:Number($('budget').value)};
+  const input={language:config.language,provider:selectedProvider(),apiKey:$('api-key').value.trim(),apiBase:$('api-base').value.trim(),model:$('model').value.trim(),localKey:$('local-key').value.trim(),localBase:$('local-base').value.trim(),localModel:$('local-model').value.trim(),hotkey:$('hotkey').value,autoCamera:$('auto-camera').checked,showOverlay:$('show-overlay').checked,maxDecisions:$('budget').value.trim()===''?NaN:Number($('budget').value),objective:$('objective').value};
   clearFieldErrors();if(showFieldErrors(fieldErrors(input,{requireKey:true})))return;
   validateSettings(input);
   if(!await chrome.permissions.request({origins:[originPattern(input.provider==='local'?input.localBase:input.apiBase)]}))throw new Error('未获得 API 访问授权，设置未保存。');

@@ -1,4 +1,4 @@
-export const DEFAULTS = /* @__PURE__ */ Object.freeze({ provider: 'jev', apiBase: 'https://api.typesafe.ai/v1', model: 'jev-latest', localBase: 'http://127.0.0.1:8742/v1', localModel: 'laya', hotkey: 'Alt+Shift+J', autoCamera: true, showOverlay: true, maxDecisions: 2000, language:'zh-CN' });
+export const DEFAULTS = /* @__PURE__ */ Object.freeze({ provider: 'jev', apiBase: 'https://api.typesafe.ai/v1', model: 'jev-latest', localBase: 'http://127.0.0.1:8742/v1', localModel: 'laya', hotkey: 'Alt+Shift+J', autoCamera: true, showOverlay: true, maxDecisions: 2000, objective: '', language:'zh-CN' });
 export const PROVIDERS = /* @__PURE__ */ Object.freeze({ jev: { id: 'jev', name: 'Jev', requiresKey: true }, local: { id: 'local', name: 'Laya', requiresKey: false } });
 // The active provider decides which stored endpoint, key and model the background uses.
 export function activeProvider(s) {
@@ -48,6 +48,8 @@ export function validateSettings(input, prior = {}) {
   s.autoCamera = Boolean(s.autoCamera);
   s.showOverlay = Boolean(s.showOverlay);
   s.language = s.language === 'en' ? 'en' : 'zh-CN';
+  s.objective = String(s.objective ?? '').replace(/\s+/g, ' ').trim();
+  if (s.objective.length > 300) throw new Error('本局目标最多 300 个字符。');
   s.apiKey = String(s.apiKey ?? '').trim();
   s.localKey = String(s.localKey ?? '').trim();
   if (s.apiKey.length > 4096 || /[\r\n]/.test(s.apiKey) || s.localKey.length > 4096 || /[\r\n]/.test(s.localKey)) throw new Error('密钥格式无效。');
@@ -64,6 +66,7 @@ export function fieldErrors(input, {requireKey = false} = {}) {
   check('hotkey', () => normalizeHotkey(input.hotkey ?? ''));
   const n = Number(input.maxDecisions);
   if (!Number.isInteger(n) || n < 1 || n > 10000) errors.maxDecisions = '每局决策上限应为 1–10000。';
+  if (String(input.objective ?? '').replace(/\s+/g, ' ').trim().length > 300) errors.objective = '本局目标最多 300 个字符。';
   const keyField = local ? 'localKey' : 'apiKey', key = String(input[keyField] ?? '').trim();
   if (key.length > 4096 || /[\r\n]/.test(key)) errors[keyField] = '密钥格式无效。';
   else if (requireKey && !local && !key) errors.apiKey = '请输入 JEV 密钥。';
@@ -77,9 +80,10 @@ export function errorField(message, provider = 'jev') {
   if (/模型名称/.test(message)) return local ? 'localModel' : 'model';
   if (/快捷键/.test(message)) return 'hotkey';
   if (/决策上限/.test(message)) return 'maxDecisions';
+  if (/本局目标/.test(message)) return 'objective';
   return '';
 }
-export const publicSettings = s => ({provider:s.provider==='local'?'local':'jev', providerName:activeProvider(s).name, apiBase:s.apiBase, model:s.model, localBase:s.localBase??DEFAULTS.localBase, localModel:s.localModel??DEFAULTS.localModel, hasLocalKey:!!s.localKey, hotkey:s.hotkey, autoCamera:s.autoCamera, showOverlay:s.showOverlay??DEFAULTS.showOverlay, maxDecisions:s.maxDecisions, language:s.language??DEFAULTS.language, hasKey:!!s.apiKey});
+export const publicSettings = s => ({provider:s.provider==='local'?'local':'jev', providerName:activeProvider(s).name, apiBase:s.apiBase, model:s.model, localBase:s.localBase??DEFAULTS.localBase, localModel:s.localModel??DEFAULTS.localModel, hasLocalKey:!!s.localKey, hotkey:s.hotkey, autoCamera:s.autoCamera, showOverlay:s.showOverlay??DEFAULTS.showOverlay, maxDecisions:s.maxDecisions, objective:s.objective??'', language:s.language??DEFAULTS.language, hasKey:!!s.apiKey});
 // For the extension's own popup only: the stored keys, so the form can show them masked.
 export const privateSettings = s => ({...publicSettings(s), apiKey:s.apiKey??'', localKey:s.localKey??''});
 export function prepareQuestions(body) {

@@ -94,7 +94,7 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
     await patch(tabId,()=>session);
     try {
       await c.tabs.sendMessage(tabId,{type:'BIND_SESSION',token:session.token},{documentId});
-      const result=await pageCall(tabId,'start',{token:session.token,maxDecisions:config.maxDecisions,autoCamera:config.autoCamera},documentId);
+      const result=await pageCall(tabId,'start',{token:session.token,maxDecisions:config.maxDecisions,autoCamera:config.autoCamera,objective:config.objective},documentId);
       if(!result?.running)throw new Error(result?.error || '托管未能启动。');
       await badge(tabId,'ON');
       logAppend({at:now(),kind:'session',event:'start',tabId,provider:provider.id,model:provider.model,maxDecisions:config.maxDecisions});

@@ -121,6 +121,48 @@ function roleOf(rule) {
   return rule.category ?? "support or technology";
 }
 
+// Attack readiness follows what this base can actually field, not a fixed table of units.
+// - vehicles producible: the classic armored force (ATTACK_FORCE_SIZE) with anti-air escorts when needed
+// - vehicles not producible: every armed ground unit counts toward the same threshold
+// - nothing producible at all: attack with whatever exists
+// - force stopped growing for a long time (no factory, no money, unit cap): attack with what exists
+export const FORCE_STALL_TICKS = 2700;
+export function forceReadiness(api, catalog, state, army, tanks, memory) {
+  const tick = api.tick();
+  const vehicleType = api.QueueType?.Vehicles ?? 3, infantryType = api.QueueType?.Infantry ?? 2;
+  const offers = queue => { try { return api.production.available(queue) ?? []; } catch { return []; } };
+  const armed = name => (catalog[name]?.weapon?.damage ?? 0) > 0 && !catalog[name]?.harvester && !catalog[name]?.naval && catalog[name]?.category !== "AirPower";
+  const vehicleOffers = offers(vehicleType).filter(i => armed(i.name));
+  const infantryOffers = offers(infantryType).filter(i => armed(i.name) && !catalog[i.name]?.engineer);
+  const queued = (state.queues ?? []).flatMap(q => q.items ?? []).map(i => i.name);
+  const canBuildVehicles = vehicleOffers.length > 0 || queued.some(n => catalog[n] && armed(n) && catalog[n].category !== "Soldier" && catalog[n].type !== api.ObjectType?.Infantry);
+  const canBuildAnything = canBuildVehicles || infantryOffers.length > 0 || queued.some(n => armed(n));
+  const aaProducible = vehicleOffers.some(i => activeWeapons({ name: i.name }, catalog).some(w => w.aa)) || queued.some(n => catalog[n] && activeWeapons({ name: n }, catalog).some(w => w.aa) && catalog[n].category !== "Soldier");
+  const combatUnits = army.filter(u => u.type !== api.ObjectType.Building && !catalog[u.name]?.harvester && (u.primaryWeapon || (catalog[u.name]?.weapon?.damage ?? 0) > 0) && catalog[u.name]?.category !== "AirPower").length;
+  const progress = memory.forceProgress;
+  if (!progress || combatUnits > progress.count) memory.forceProgress = { count: combatUnits, tick };
+  const stalledTicks = memory.forceProgress ? tick - memory.forceProgress.tick : 0;
+  const stalled = combatUnits > 0 && stalledTicks >= FORCE_STALL_TICKS;
+  const aaNeeded = (state.airThreatCount ?? 0) > 0 && (state.mobileAntiAirCount ?? 0) < ATTACK_AA_ESCORTS;
+  const aaSatisfied = !aaNeeded || !aaProducible;
+  const committedAttack = memory.mission?.mode === "attack" && tanks.length >= 4;
+  const threshold = canBuildAnything ? ATTACK_FORCE_SIZE : 1;
+  let ready = false, reason;
+  if (committedAttack) { ready = true; reason = "an attack is already committed"; }
+  else if (stalled) { ready = true; reason = `the force has not grown for ${stalledTicks} ticks; attack with the ${combatUnits} units that exist`; }
+  else if (canBuildVehicles) {
+    ready = tanks.length >= ATTACK_FORCE_SIZE && aaSatisfied;
+    reason = ready ? `${tanks.length} ground combat vehicles fielded` : !aaSatisfied ? `air threats observed and only ${state.mobileAntiAirCount}/${ATTACK_AA_ESCORTS} mobile anti-air escorts` : `${tanks.length}/${ATTACK_FORCE_SIZE} ground combat vehicles; vehicles are producible`;
+  } else if (canBuildAnything) {
+    ready = combatUnits >= ATTACK_FORCE_SIZE && aaSatisfied;
+    reason = ready ? `${combatUnits} armed units fielded; vehicles cannot be produced here` : `${combatUnits}/${ATTACK_FORCE_SIZE} armed units; vehicles cannot be produced, infantry count toward the force`;
+  } else {
+    ready = combatUnits > 0;
+    reason = ready ? `nothing can be produced; attack with the ${combatUnits} units that exist` : "no armed units and no production available";
+  }
+  return { ready, reason, threshold, combatUnits, groundVehicles: tanks.length, canBuildVehicles, canBuildAnything, aaProducible, aaNeeded, stalledTicks };
+}
+
 export function frontierPoints(api, base, memory) {
   const size = api.map.size();
   const points = [];
@@ -306,7 +348,7 @@ export function candidateGroups(api, catalog, snapshot, memory) {
   const scoutUnits=army.filter(u=>u.type===api.ObjectType.Infantry).sort((a,b)=>scoutScore(catalog[b.name])-scoutScore(catalog[a.name]));
   const bestScout=scoutUnits[0];
   if(bestScout)memory.scoutId=bestScout.id;
-  const needsScout=!memory.enemyBuildings.size&&!state.baseUnderAttack&&preferredScout&&
+  const needsScout=(!memory.enemyBuildings.size||memory.lastReady===false)&&!state.baseUnderAttack&&preferredScout&&
     !scoutUnits.some(u=>u.name===preferredScout.name)&&!state.queues.some(q=>q.items.some(i=>i.name===preferredScout.name));
   const roles={antiInfantry:0,antiArmor:0};
   for(const u of scoutUnits)if(u.id!==memory.scoutId&&catalog[u.name]?.weapon?.range>=3)roles[infantryProfile(catalog[u.name],api).role]++;
@@ -445,10 +487,13 @@ export function candidateGroups(api, catalog, snapshot, memory) {
   const support = army.filter(u=>u.type===api.ObjectType.Infantry&&u.id!==memory.scoutId&&
     api.tick()-(memory.specialOrders?.get(u.id)?.tick??-10000)>450);
   const active = [...tanks,...support];
+  const readiness = forceReadiness(api, catalog, state, army, tanks, memory);
+  state.forceReadiness = readiness;
+  memory.lastReady = readiness.ready;
   const rallySite=chooseRallySite(api,catalog,units,base);
   const tactics = group(
     "tactics",
-    `Choose the combat mission to win by destroying the enemy base. Protect the base from nearby attackers, then press the enemy base with at least ${ATTACK_FORCE_SIZE} ground combat vehicles while production builds toward the force goal. Use numerical strength and health already computed in state. Keep a useful active attack; do not oscillate between attack and retreat. When the enemy base is unknown, advance through a supplied visible frontier to scout it. Combat orders use existing units and cost zero credits. Production savings and current credits do not restrict these actions. If a force is ready but still rallying, choose a supplied attack mission instead of continuing to wait.`,
+    `${memory.objective ? `MISSION OBJECTIVE: ${memory.objective} ` : ''}Choose the combat mission to win by destroying the enemy base. Protect the base from nearby attackers, then press the enemy base with the force goal computed in state.forceReadiness: ${readiness.ready ? `the force is READY (${readiness.reason}); choose a supplied attack or advance mission now` : `not ready yet (${readiness.reason}); ${readiness.threshold} combat units are required, ${readiness.combatUnits} exist`}. The threshold follows what this base can actually produce: when vehicles cannot be built, infantry count; when nothing can be built or the force has stopped growing, attack with what exists. Use numerical strength and health already computed in state. Keep a useful active attack; do not oscillate between attack and retreat. When the enemy base is unknown, advance through a supplied visible frontier to scout it. Combat orders use existing units and cost zero credits. Production savings and current credits do not restrict these actions. If a force is ready but still rallying, choose a supplied attack mission instead of continuing to wait.`,
   );
   groups.tactics.criteria.wait = "Keep an active useful combat mission, or wait when no suitable mission is supplied. Do not keep rallying after the force is ready and an attack target is supplied. Credit balance is irrelevant to movement and attack orders.";
   state.combat = {
@@ -463,11 +508,7 @@ export function candidateGroups(api, catalog, snapshot, memory) {
     (combatWeapon(b,catalog).range??0)-(combatWeapon(a,catalog).range??0));
   if (active.length) {
     const ids = active.map((u) => u.id);
-    const committedAttack =
-      memory.mission?.mode === "attack" && tanks.length >= 4;
-    const ready =
-      (tanks.length >= ATTACK_FORCE_SIZE || committedAttack) &&
-      (state.airThreatCount === 0 || state.mobileAntiAirCount >= ATTACK_AA_ESCORTS);
+    const ready = readiness.ready;
     if (!ready && !threatening.length && rallySite && memory.enemyBuildings.size)
       tactics(
         "assemble_force",
@@ -575,8 +616,9 @@ export function candidateGroups(api, catalog, snapshot, memory) {
       (u) => Math.hypot(u.tile.rx - oldMission.x, u.tile.ry - oldMission.y) > 4,
     ) &&
     api.tick() - oldMission.since < 450;
+  // Keep revealing the map while no attack is possible: an enemy building seen once must not end scouting.
   const shouldExplore =
-    !memory.enemyBuildings.size && !travelling && !state.baseUnderAttack;
+    (!memory.enemyBuildings.size || !readiness.ready) && !travelling && !state.baseUnderAttack;
   const scoutChoice = group(
     "scouting",
     "Choose a frontier to reveal the unknown enemy base. Use one expendable infantry early; do not wait for tanks to scout. If an idle scout is available and the enemy base is unknown, scouting now is useful. An existing travelling scout is handled separately.",
@@ -591,11 +633,11 @@ export function candidateGroups(api, catalog, snapshot, memory) {
       memory.points = frontierPoints(api, base, memory);
       memory.pointsAt = api.tick();
     }
-    const mobilize =
-      tanks.length >= 8 &&
-      (state.airThreatCount === 0 || state.mobileAntiAirCount >= ATTACK_AA_ESCORTS);
+    const mobilize = readiness.ready && !memory.enemyBuildings.size;
     groups.scouting.criteria.wait =
-      "Wait only if a scout is already moving or the enemy base has already been discovered. With idle troops and an unknown enemy base, choose one of the frontiers.";
+      memory.enemyBuildings.size
+        ? "Wait only if a scout is already moving. The force is not ready to attack, so one expendable unit should keep revealing the map for objectives and enemy positions."
+        : "Wait only if a scout is already moving or the enemy base has already been discovered. With idle troops and an unknown enemy base, choose one of the frontiers.";
     for (const p of memory.points.slice(0, 2))
       scoutChoice(
         `explore_${p.x}_${p.y}`,
@@ -950,6 +992,7 @@ export async function attachJevPlayer(api, options = {}) {
     maxStaleTicks = options.maxStaleTicks ?? 180;
   const memory = {
     autoCamera: options.autoCamera !== false,
+    objective: typeof options.objective === "string" ? options.objective.trim().slice(0, 300) : "",
     frontiers: new Map(),
     enemyBuildings: new Map(),
     lastPlaceTick: -1000,

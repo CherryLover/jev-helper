@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Jev 对局托管</title><link rel="stylesheet" href="popup.css"></head>
 <body>
-<header><div class="brand-mark">J</div><div class="brand"><p class="eyebrow" data-i18n="brand">王二火大 · PLAYER AI</p><h1 data-i18n="title">Jev 对局托管</h1></div><div class="header-right"><div class="language" aria-label="Language / 语言"><button id="lang-zh" aria-pressed="true">中</button><button id="lang-en" aria-pressed="false">EN</button></div><span class="version">0.4.1</span></div></header>
+<header><div class="brand-mark">J</div><div class="brand"><p class="eyebrow" data-i18n="brand">王二火大 · PLAYER AI</p><h1 data-i18n="title">Jev 对局托管</h1></div><div class="header-right"><div class="language" aria-label="Language / 语言"><button id="lang-zh" aria-pressed="true">中</button><button id="lang-en" aria-pressed="false">EN</button></div><span class="version">0.4.2</span></div></header>
 <main>
 <section class="battle">
  <div class="status-line"><span id="dot" class="dot"></span><strong id="status" data-i18n="connecting">正在连接游戏…</strong><span id="tick" class="tick"></span></div>
@@ -49,6 +49,7 @@
  <label for="local-key" data-i18n="localKey">本地访问令牌（可选）</label><div class="secret"><input id="local-key" name="local-key" type="password" autocomplete="off" spellcheck="false"><button type="button" class="eye" data-reveal="local-key" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5c-5 0-9 4-10 7 1 3 5 7 10 7s9-4 10-7c-1-3-5-7-10-7zm0 11.5a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9zm0-7a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z"/></svg></button></div><p class="field-error" id="err-local-key" role="alert" hidden></p>
  </div>
  <label for="hotkey" data-i18n="hotkey">托管快捷键</label><input id="hotkey" type="text" readonly aria-describedby="hotkey-hint"><p class="field-error" id="err-hotkey" role="alert" hidden></p><p id="hotkey-hint" class="hint" data-i18n="hotkeyHint"></p>
+ <label for="objective" data-i18n="objective">本局目标（可选）</label><textarea id="objective" rows="2" maxlength="300" spellcheck="false"></textarea><p class="field-error" id="err-objective" role="alert" hidden></p><p class="hint" data-i18n="objectiveHint"></p>
  <label class="check"><input id="auto-camera" type="checkbox"><span data-i18n="autoCamera">自动跟随交战与基地镜头</span></label>
  <label class="check"><input id="show-overlay" type="checkbox" aria-describedby="overlay-hint"><span data-i18n="showOverlay">托管时显示悬浮状态窗</span></label><p id="overlay-hint" class="hint" data-i18n="overlayHint"></p>
  <details><summary data-i18n="advanced">更多设置</summary><div class="advanced"><div class="provider-fields" id="advanced-jev"><label for="model" data-i18n="model">Jev 模型</label><input id="model" spellcheck="false"><p class="field-error" id="err-model" role="alert" hidden></p></div><div class="provider-fields" id="advanced-local" hidden><label for="local-model" data-i18n="localModel">本地模型名称</label><input id="local-model" spellcheck="false"><p class="field-error" id="err-local-model" role="alert" hidden></p><p class="hint" data-i18n="localModelHint"></p></div><label for="budget" data-i18n="budget">每局决策请求上限</label><input id="budget" type="number" min="1" max="10000"><p class="field-error" id="err-budget" role="alert" hidden></p><p class="hint" data-i18n="budgetHint"></p></div></details>

@@ -30,6 +30,7 @@ test('background pins configured endpoint and authenticates tab, origin, frame, 
   await assert.rejects(x.app.handle({...x.request,token:'wrong'},sender));
   const result=await x.app.handle({...x.request,url:'https://evil.test',body:{...body,url:'https://evil.test'}},sender);
   assert.equal(request.url,'https://api.typesafe.ai/v1/systemone');assert.equal(request.options.headers.Authorization,'Bearer test-only-secret');
+  assert.equal(x.scripts.find(s=>s.args?.[0]==='start').args[1].objective,'','no objective by default');
   assert.equal(request.options.redirect,'error');assert.equal(result.answers.tactics.choice,'attack');
   assert.equal(JSON.parse(request.options.body).questions.tactics.type,'choice');
 });
@@ -194,4 +195,14 @@ test('decision log records questions, answers, actions and failures; export is t
   const restarted=createBackground(x.c,{fetchImpl:async()=>answer()});
   assert.equal((await restarted.handle({type:'LOG_STATS'},extension)).stats.entries,4);
   await restarted.handle({type:'LOG_CLEAR'},extension);assert.equal((await restarted.handle({type:'LOG_STATS'},extension)).stats.entries,0);assert.equal(x.data.local.log,undefined);
+});
+
+test('the mission objective is saved, echoed to the popup and handed to the player on start',async()=>{
+  const x=mockChrome();const app=createBackground(x.c,{fetchImpl:async()=>answer()});
+  const saved=await app.handle({type:'SAVE_SETTINGS',settings:{objective:'  Destroy the   Pentagon\n in the north-east  '}},extension);
+  assert.equal(saved.objective,'Destroy the Pentagon in the north-east');
+  await assert.rejects(app.handle({type:'SAVE_SETTINGS',settings:{objective:'x'.repeat(301)}},extension),/300/);
+  await app.handle({type:'START',tabId:7},extension);
+  assert.equal(x.scripts.find(s=>s.args?.[0]==='start').args[1].objective,'Destroy the Pentagon in the north-east');
+  assert.equal((await app.handle({type:'OVERLAY_STATUS'},sender)).objective,undefined,'content scripts do not receive settings text');
 });

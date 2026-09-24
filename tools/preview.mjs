@@ -9,7 +9,11 @@ const history=Array.from({length:40},(_,i)=>({at:now-(39-i)*5000,gameSeconds:160
 let status={supported:true,running:true,title:'界面预览 · 模拟对局 / UI fixture',decisions:13,credits:8450,latencyMs:287,lastTick:5400,mission:'模拟显示：派遣主力拦截基地附近的敌人',events:[{at:now,kind:'action',actionType:'produce',choice:'produce_MTNK',accepted:true,text:'生产灰熊坦克'}],observation,history,liveObservation:true,acceptedActions:31,waits:8};
 if(new URL(location.href).searchParams.has('empty'))status={supported:true,running:false,title:'UI fixture · Lobby',events:[]};
 const deny=new URL(location.href).searchParams.has('deny');let granted=!deny;
-window.chrome={permissions:{request:async()=>{if(deny&&!window.__grantNext)return false;granted=true;return true;}},tabs:{query:async()=>[{id:1}]},runtime:{sendMessage:async m=>{
+const overlayStatus={running:true,decisions:13,credits:8450,latencyMs:287,lastTick:5400,failures:1,losses:{ownUnits:7,ownBuildings:1,enemyUnits:23,enemyBuildings:4}};
+window.chrome={permissions:{request:async()=>{if(deny&&!window.__grantNext)return false;granted=true;return true;}},tabs:{query:async()=>[{id:1}]},runtime:{onMessage:{addListener(){}},sendMessage:async m=>{
+ if(m.type==='PUBLIC_CONFIG')return {ok:true,value:{hotkey:settings.hotkey,language:settings.language,showOverlay:true,providerName:settings.providerName}};
+ if(m.type==='OVERLAY_STATUS')return {ok:true,value:{...overlayStatus,hotkey:settings.hotkey,language:settings.language,showOverlay:true,providerName:settings.providerName}};
+ if(m.type==='SET_AUTO_REPORT'){settings.autoReport=m.autoReport;return {ok:true,value:{autoReport:m.autoReport}};}
  if(m.type==='GET_SETTINGS')return {ok:true,value:{...settings,permitted:granted,origin:settings.provider==='local'?'http://127.0.0.1/*':'https://api.typesafe.ai/*'}};
  if(m.type==='SET_LANGUAGE'){settings.language=m.language;localStorage.previewLanguage=m.language;return {ok:true,value:{language:m.language}};}
  if(m.type==='SET_OVERLAY'){settings.showOverlay=m.showOverlay;return {ok:true,value:{showOverlay:m.showOverlay}};}
@@ -29,10 +33,10 @@ window.chrome={permissions:{request:async()=>{if(deny&&!window.__grantNext)retur
  if(m.type==='STOP'){status.running=false;status.reason='manual';return {ok:true,value:status};}
  return {ok:false,error:'Unknown preview operation'};
 }}};`;
-const allowed=new Set(['popup.html','popup.css','popup.js','help.html','help.css','help.js']);
+const allowed=new Set(['popup.html','popup.css','popup.js','help.html','help.css','help.js','content.js']);
 http.createServer(async(req,res)=>{
  const name=new URL(req.url,'http://localhost').pathname.slice(1)||'popup.html';
  if(name==='preview-mock.js'){res.setHeader('Content-Type','text/javascript');res.end(mock);return;}
  if(!allowed.has(name)){res.writeHead(404);res.end();return;}
- try{let body=await fs.readFile(new URL('../dist/'+name,import.meta.url));if(name==='popup.html')body=body.toString().replace('<script type="module"','<script src="preview-mock.js"></script><script type="module"');res.setHeader('Content-Type',name.endsWith('.html')?'text/html; charset=utf-8':name.endsWith('.css')?'text/css':'text/javascript');res.setHeader('Cache-Control','no-store');res.end(body);}catch{res.writeHead(404);res.end();}
+ try{let body=await fs.readFile(new URL('../dist/'+name,import.meta.url));if(name==='popup.html'){body=body.toString().replace('<script type="module"','<script src="preview-mock.js"></script><script type="module"');if(new URL(req.url,'http://localhost').searchParams.has('overlay'))body=body.replace('</body>','<script src="content.js"></script></body>');}res.setHeader('Content-Type',name.endsWith('.html')?'text/html; charset=utf-8':name.endsWith('.css')?'text/css':'text/javascript');res.setHeader('Cache-Control','no-store');res.end(body);}catch{res.writeHead(404);res.end();}
 }).listen(4318,'127.0.0.1',()=>console.log('UI fixtures only: http://127.0.0.1:4318/ (populated), /?empty (lobby). No model or game connection.'));

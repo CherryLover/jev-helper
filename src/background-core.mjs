@@ -26,6 +26,18 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
   // Match records: one summary per finished autopilot session, kept for the popup's results panel.
   const MATCHES_MAX=30;
   const readMatches=async()=>{const list=(await c.storage.local.get('matches')).matches;return Array.isArray(list)?list:[];};
+  // Text → base64 data URL for chrome.downloads; service workers have no object URLs.
+  const dataUrl=text=>{const bytes=new TextEncoder().encode(text);let bin='';for(let i=0;i<bytes.length;i+=0x8000)bin+=String.fromCharCode(...bytes.subarray(i,i+0x8000));return 'data:application/json;base64,'+btoa(bin);};
+  const stamp=at=>{const d=new Date(at),p=n=>String(n).padStart(2,'0');return `${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;};
+  // Automatic battle report: the match record plus every log entry of that session, saved under
+  // Downloads/jev-reports without a prompt. Failures never affect the record itself.
+  async function saveReport(record,entries,settings){
+    if(settings.autoReport===false || !c.downloads?.download)return '';
+    const file=`jev-reports/jev-report-${stamp(record.startedAt)}.json`;
+    const bundle={version:c.runtime.getManifest?.()?.version??'',exportedAt:new Date(now()).toISOString(),settings:publicSettings(settings),match:record,stats:logStats(entries),entries};
+    try{await c.downloads.download({url:dataUrl(JSON.stringify(bundle,null,1)),filename:file,conflictAction:'uniquify',saveAs:false});return file;}
+    catch{return '';}
+  }
   async function finishMatch(tabId,reason){
     const s=await getSession(tabId);
     if(!s || s.matchRecorded || !s.startedAt)return;
@@ -40,8 +52,9 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
       credits:{start:credits[0]??null,end:credits.at(-1)??null,max:credits.length?Math.max(...credits):null,min:credits.length?Math.min(...credits):null},armyMax:s.armyMax??null,
       produced:stats.actions.acceptedProduce,actionsByType:stats.actions.byType,skippedReasons:stats.actions.skippedReasons,
       groups:Object.fromEntries(Object.entries(stats.groups).map(([id,g])=>[id,{asked:g.asked,waitRate:g.waitRate,top:Object.keys(g.choices)[0]??''}])),history};
+    record.reportFile=await saveReport(record,window,settings);
     await serial(stateLocks,'matches',async()=>{const list=await readMatches();await c.storage.local.set({matches:[...list.filter(m=>m.id!==record.id),record].slice(-MATCHES_MAX)});}).catch(()=>{});
-    await patch(tabId,current=>current?.startedAt===s.startedAt?{...current,matchRecorded:true}:current);
+    await patch(tabId,current=>current?.startedAt===s.startedAt?{...current,matchRecorded:true,reportFile:record.reportFile}:current);
   }
   const getSession = async tabId => (await c.storage.session.get(key(tabId)))[key(tabId)];
   const getSettings = async () => ({...DEFAULTS,...(await c.storage.local.get('settings')).settings});
@@ -211,7 +224,8 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
       const live=await pageCall(sender.tab.id,'status',null,s.documentId).catch(()=>null);
       const current=await getSession(sender.tab.id);
       if(!live?.running || !live.available || !current?.running || current.token!==s.token)return {...config,running:false};
-      return {...config,running:true,decisions:current.decisions??0,credits:current.credits,latencyMs:current.latencyMs,lastTick:current.lastTick,failures:current.failures??0};
+      const l=current.observation?.ledger;
+      return {...config,running:true,decisions:current.decisions??0,credits:current.credits,latencyMs:current.latencyMs,lastTick:current.lastTick,failures:current.failures??0,losses:l?{ownUnits:l.ownUnitsLost,ownBuildings:l.ownBuildingsLost,enemyUnits:l.enemyUnitsDestroyed,enemyBuildings:l.enemyBuildingsDestroyed}:null};
     }
     if(message.type==='DECIDE')return decide(message,sender);
     if(message.type==='EVENT')return event(message,sender);
@@ -236,13 +250,14 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
       let updated;await serial(stateLocks,'matches',async()=>{const list=await readMatches();updated=list.find(m=>m.id===message.id);if(!updated)return;updated.outcome=outcome;updated.outcomeMarked=!!outcome;await c.storage.local.set({matches:list});});
       if(!updated)throw new Error('未找到该场战绩。');return updated;
     }
-    if(message.type==='SET_LANGUAGE' || message.type==='SET_OVERLAY'){
+    if(message.type==='SET_LANGUAGE' || message.type==='SET_OVERLAY' || message.type==='SET_AUTO_REPORT'){
       const settings=await getSettings();
       if(message.type==='SET_LANGUAGE')settings.language=message.language==='en'?'en':'zh-CN';
-      else settings.showOverlay=message.showOverlay===true;
+      else if(message.type==='SET_OVERLAY')settings.showOverlay=message.showOverlay===true;
+      else settings.autoReport=message.autoReport!==false;
       await c.storage.local.set({settings});
       await broadcastConfig(settings);
-      return message.type==='SET_LANGUAGE'?{language:settings.language}:{showOverlay:settings.showOverlay};
+      return message.type==='SET_LANGUAGE'?{language:settings.language}:message.type==='SET_OVERLAY'?{showOverlay:settings.showOverlay}:{autoReport:settings.autoReport};
     }
     if(message.type==='TEST_CONNECTION'){
       if(probing)throw new Error('连接测试正在进行，请稍候。');

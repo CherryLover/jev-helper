@@ -121,6 +121,53 @@ function roleOf(rule) {
   return rule.category ?? "support or technology";
 }
 
+// How the fighting is going, and what else could be brought to bear. Losses and kills come from
+// the ledger; a stalled assault or a losing exchange raises the escalation level, which in turn
+// raises the force needed before the next assault and points the model at every other arm.
+export const COMBAT_WINDOW_TICKS = 1800, STALE_ATTACK_TICKS = 2700, ESCALATION_MAX = 3;
+export function combatAssessment(api, catalog, state, memory, { army = [], units = [], enemies = [] } = {}) {
+  const tick = api.tick(), ledger = memory.ledger, B = api.ObjectType.Building;
+  const samples = memory.combatSamples ??= [];
+  const lost = (ledger?.ownUnitsLost ?? 0) + (ledger?.ownBuildingsLost ?? 0), killed = (ledger?.enemyUnitsDestroyed ?? 0) + (ledger?.enemyBuildingsDestroyed ?? 0);
+  if (!samples.length || tick - samples.at(-1).tick >= 60) samples.push({ tick, lost, killed });
+  while (samples.length > 1 && tick - samples[0].tick > COMBAT_WINDOW_TICKS) samples.shift();
+  const recentLost = lost - samples[0].lost, recentKilled = killed - samples[0].killed;
+  const mission = memory.mission;
+  const targetAlive = mission?.mode === "attack" && mission.targetId !== undefined && (enemies.some(e => e.id === mission.targetId) || memory.enemyBuildings?.has(mission.targetId));
+  const staleAttack = !!mission && mission.mode === "attack" && tick - mission.since > STALE_ATTACK_TICKS && targetAlive;
+  const tradingBadly = recentLost >= 4 && recentKilled * 2 <= recentLost;
+  const tradingWell = recentKilled >= 3 && recentKilled >= recentLost * 2;
+  const esc = memory.escalation ??= { level: 0, changedAt: -Infinity, reason: "" };
+  if ((tradingBadly || staleAttack) && tick - esc.changedAt >= COMBAT_WINDOW_TICKS && esc.level < ESCALATION_MAX) {
+    esc.level++; esc.changedAt = tick;
+    esc.reason = tradingBadly ? `lost ${recentLost} for ${recentKilled} kills in the last ${COMBAT_WINDOW_TICKS} ticks` : `the assault on #${mission.targetId} made no progress for ${tick - mission.since} ticks`;
+    if (mission?.mode === "attack") { memory.abandonedAttack = { targetId: mission.targetId, tick }; memory.mission = undefined; }
+  } else if (esc.level > 0 && tick - esc.changedAt >= COMBAT_WINDOW_TICKS && (tradingWell || tick - esc.changedAt >= COMBAT_WINDOW_TICKS * 3)) {
+    esc.level--; esc.changedAt = tick; esc.reason = tradingWell ? "recent exchanges are favourable" : "a quiet period";
+  }
+  const aircraft = units.filter(u => u.type !== B && catalog[u.name]?.aircraft && (u.ammo === undefined || u.ammo > 0)).length;
+  const naval = units.filter(u => u.type !== B && catalog[u.name]?.naval && u.primaryWeapon).length;
+  const engineers = units.filter(u => catalog[u.name]?.engineer).length;
+  const idleGround = army.filter(u => u.isIdle && !catalog[u.name]?.naval && !catalog[u.name]?.aircraft).length;
+  let hostile = []; try { hostile = api.units("hostile") ?? []; } catch { hostile = []; }
+  const forward = memory.forwardPoint;
+  const forwardGarrisons = forward ? hostile.filter(u => u.garrison?.canOccupy && !u.garrison.count && distance(u.tile, forward) <= 14).length : 0;
+  const offers = queue => { try { return api.production.available(queue) ?? []; } catch { return []; } };
+  const assets = { aircraft, naval, engineers, idleGround, forwardGarrisons,
+    aircraftProducible: offers(api.QueueType?.Aircrafts ?? 4).length > 0, navalProducible: offers(api.QueueType?.Ships ?? 5).length > 0, defensesProducible: offers(api.QueueType?.Armory ?? 1).length > 0 };
+  return { level: esc.level, reason: esc.reason, recentLost, recentKilled, tradingBadly, tradingWell, staleAttack, assets };
+}
+export function escalationAdvice(a) {
+  if (!a || !a.level) return "";
+  const arms = [];
+  if (a.assets.aircraft) arms.push(`${a.assets.aircraft} armed aircraft`); else if (a.assets.aircraftProducible) arms.push("an air wing can be built");
+  if (a.assets.naval) arms.push(`${a.assets.naval} warships`); else if (a.assets.navalProducible) arms.push("ships can be built");
+  if (a.assets.forwardGarrisons) arms.push(`${a.assets.forwardGarrisons} empty civilian buildings near the target to garrison as forward strongpoints`);
+  if (a.assets.engineers) arms.push(`${a.assets.engineers} engineers (capture or repair)`);
+  if (a.assets.defensesProducible) arms.push("forward defensive structures");
+  return `ATTACKS ARE FAILING (escalation ${a.level}: ${a.reason}; last window lost ${a.recentLost}, killed ${a.recentKilled}). Do not feed units in one at a time. Regroup the whole force first, then strike together and combine arms. Available besides the ground column: ${arms.length ? arms.join("; ") : "nothing yet, so mass and counters must do it"}. `;
+}
+
 // Attack readiness follows what this base can actually field, not a fixed table of units.
 // - vehicles producible: the classic armored force (ATTACK_FORCE_SIZE) with anti-air escorts when needed
 // - vehicles not producible: every armed ground unit counts toward the same threshold
@@ -146,21 +193,23 @@ export function forceReadiness(api, catalog, state, army, tanks, memory) {
   const aaNeeded = (state.airThreatCount ?? 0) > 0 && (state.mobileAntiAirCount ?? 0) < ATTACK_AA_ESCORTS;
   const aaSatisfied = !aaNeeded || !aaProducible;
   const committedAttack = memory.mission?.mode === "attack" && tanks.length >= 4;
-  const threshold = canBuildAnything ? ATTACK_FORCE_SIZE : 1;
+  const level = memory.escalation?.level ?? 0, escalatedAt = memory.escalation?.changedAt ?? -Infinity;
+  const threshold = canBuildAnything ? Math.min(20, Math.round(ATTACK_FORCE_SIZE * (1 + 0.5 * level))) : 1;
+  const escalationNote = level ? ` (escalation ${level}: attacks were failing, so ${threshold} are required)` : "";
   let ready = false, reason;
   if (committedAttack) { ready = true; reason = "an attack is already committed"; }
-  else if (stalled) { ready = true; reason = `the force has not grown for ${stalledTicks} ticks; attack with the ${combatUnits} units that exist`; }
+  else if (stalled && (level === 0 || tick - escalatedAt >= COMBAT_WINDOW_TICKS * 2)) { ready = true; reason = `the force has not grown for ${stalledTicks} ticks; attack with the ${combatUnits} units that exist`; }
   else if (canBuildVehicles) {
-    ready = tanks.length >= ATTACK_FORCE_SIZE && aaSatisfied;
-    reason = ready ? `${tanks.length} ground combat vehicles fielded` : !aaSatisfied ? `air threats observed and only ${state.mobileAntiAirCount}/${ATTACK_AA_ESCORTS} mobile anti-air escorts` : `${tanks.length}/${ATTACK_FORCE_SIZE} ground combat vehicles; vehicles are producible`;
+    ready = tanks.length >= threshold && aaSatisfied;
+    reason = ready ? `${tanks.length} ground combat vehicles fielded${escalationNote}` : !aaSatisfied ? `air threats observed and only ${state.mobileAntiAirCount}/${ATTACK_AA_ESCORTS} mobile anti-air escorts` : `${tanks.length}/${threshold} ground combat vehicles; vehicles are producible${escalationNote}`;
   } else if (canBuildAnything) {
-    ready = combatUnits >= ATTACK_FORCE_SIZE && aaSatisfied;
-    reason = ready ? `${combatUnits} armed units fielded; vehicles cannot be produced here` : `${combatUnits}/${ATTACK_FORCE_SIZE} armed units; vehicles cannot be produced, infantry count toward the force`;
+    ready = combatUnits >= threshold && aaSatisfied;
+    reason = ready ? `${combatUnits} armed units fielded; vehicles cannot be produced here${escalationNote}` : `${combatUnits}/${threshold} armed units; vehicles cannot be produced, infantry count toward the force${escalationNote}`;
   } else {
     ready = combatUnits > 0;
     reason = ready ? `nothing can be produced; attack with the ${combatUnits} units that exist` : "no armed units and no production available";
   }
-  return { ready, reason, threshold, combatUnits, groundVehicles: tanks.length, canBuildVehicles, canBuildAnything, aaProducible, aaNeeded, stalledTicks };
+  return { ready, reason, threshold, combatUnits, groundVehicles: tanks.length, canBuildVehicles, canBuildAnything, aaProducible, aaNeeded, stalledTicks, escalation: level };
 }
 
 // Both sides' unit and building counts, plus cumulative built / lost / destroyed, observed from the
@@ -508,13 +557,18 @@ export function candidateGroups(api, catalog, snapshot, memory) {
   const support = army.filter(u=>u.type===api.ObjectType.Infantry&&u.id!==memory.scoutId&&
     api.tick()-(memory.specialOrders?.get(u.id)?.tick??-10000)>450);
   const active = [...tanks,...support];
+  // Where the fight is: the visible enemy structure or the last known one, for forward assets.
+  const forwardTarget = enemies.find(e => e.type === api.ObjectType.Building) ?? [...memory.enemyBuildings.values()][0];
+  memory.forwardPoint = forwardTarget ? { rx: forwardTarget.tile?.rx ?? forwardTarget.x, ry: forwardTarget.tile?.ry ?? forwardTarget.y } : undefined;
+  const assessment = combatAssessment(api, catalog, state, memory, { army, units, enemies });
+  state.combatAssessment = assessment;
   const readiness = forceReadiness(api, catalog, state, army, tanks, memory);
   state.forceReadiness = readiness;
   memory.lastReady = readiness.ready;
   const rallySite=chooseRallySite(api,catalog,units,base);
   const tactics = group(
     "tactics",
-    `${memory.objective ? `MISSION OBJECTIVE: ${memory.objective} ` : ''}Choose the combat mission to win by destroying the enemy base. Protect the base from nearby attackers, then press the enemy base with the force goal computed in state.forceReadiness: ${readiness.ready ? `the force is READY (${readiness.reason}); choose a supplied attack or advance mission now` : `not ready yet (${readiness.reason}); ${readiness.threshold} combat units are required, ${readiness.combatUnits} exist`}. The threshold follows what this base can actually produce: when vehicles cannot be built, infantry count; when nothing can be built or the force has stopped growing, attack with what exists. Use numerical strength and health already computed in state. Keep a useful active attack; do not oscillate between attack and retreat. When the enemy base is unknown, advance through a supplied visible frontier to scout it. Combat orders use existing units and cost zero credits. Production savings and current credits do not restrict these actions. If a force is ready but still rallying, choose a supplied attack mission instead of continuing to wait.`,
+    `${memory.objective ? `MISSION OBJECTIVE: ${memory.objective} ` : ''}${escalationAdvice(assessment)}Choose the combat mission to win by destroying the enemy base. Protect the base from nearby attackers, then press the enemy base with the force goal computed in state.forceReadiness: ${readiness.ready ? `the force is READY (${readiness.reason}); choose a supplied attack or advance mission now` : `not ready yet (${readiness.reason}); ${readiness.threshold} combat units are required, ${readiness.combatUnits} exist`}. The threshold follows what this base can actually produce: when vehicles cannot be built, infantry count; when nothing can be built or the force has stopped growing, attack with what exists. Use numerical strength and health already computed in state. Keep a useful active attack; do not oscillate between attack and retreat. When the enemy base is unknown, advance through a supplied visible frontier to scout it. Combat orders use existing units and cost zero credits. Production savings and current credits do not restrict these actions. If a force is ready but still rallying, choose a supplied attack mission instead of continuing to wait.`,
   );
   groups.tactics.criteria.wait = "Keep an active useful combat mission, or wait when no suitable mission is supplied. Do not keep rallying after the force is ready and an attack target is supplied. Credit balance is irrelevant to movement and attack orders.";
   state.combat = {
@@ -677,6 +731,10 @@ export function candidateGroups(api, catalog, snapshot, memory) {
   }
   specialGroups(api, catalog, snapshot, memory, groups);
   investmentGroups(api, catalog, snapshot, memory, groups);
+  if (assessment.level) {
+    const note = ` ESCALATION ${assessment.level}: ground assaults are failing (${assessment.reason}). Bring this arm to bear on the same target now instead of leaving it idle.`;
+    for (const id of ["aircraft", "navy", "garrison", "engineering", "transport"]) if (groups[id]) groups[id].instructions += note;
+  }
   return groups;
 }
 

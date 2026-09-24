@@ -1,4 +1,4 @@
-export const DEFAULTS = /* @__PURE__ */ Object.freeze({ provider: 'jev', apiBase: 'https://api.typesafe.ai/v1', model: 'jev-latest', localBase: 'http://127.0.0.1:8742/v1', localModel: 'laya', hotkey: 'Alt+Shift+J', autoCamera: true, showOverlay: true, maxDecisions: 2000, objective: '', language:'zh-CN' });
+export const DEFAULTS = /* @__PURE__ */ Object.freeze({ provider: 'jev', apiBase: 'https://api.typesafe.ai/v1', model: 'jev-latest', localBase: 'http://127.0.0.1:8742/v1', localModel: 'laya', hotkey: 'Alt+Shift+J', autoCamera: true, showOverlay: true, maxDecisions: 2000, objective: '', autoReport: true, language:'zh-CN' });
 export const PROVIDERS = /* @__PURE__ */ Object.freeze({ jev: { id: 'jev', name: 'Jev', requiresKey: true }, local: { id: 'local', name: 'Laya', requiresKey: false } });
 // The active provider decides which stored endpoint, key and model the background uses.
 export function activeProvider(s) {
@@ -47,6 +47,7 @@ export function validateSettings(input, prior = {}) {
   if (!Number.isInteger(s.maxDecisions) || s.maxDecisions < 1 || s.maxDecisions > 10000) throw new Error('每局决策上限应为 1–10000。');
   s.autoCamera = Boolean(s.autoCamera);
   s.showOverlay = Boolean(s.showOverlay);
+  s.autoReport = s.autoReport !== false && s.autoReport !== 'false';
   s.language = s.language === 'en' ? 'en' : 'zh-CN';
   s.objective = String(s.objective ?? '').replace(/\s+/g, ' ').trim();
   if (s.objective.length > 300) throw new Error('本局目标最多 300 个字符。');
@@ -84,7 +85,7 @@ export function errorField(message, provider = 'jev') {
   if (/本局目标/.test(message)) return 'objective';
   return '';
 }
-export const publicSettings = s => ({provider:s.provider==='local'?'local':'jev', providerName:activeProvider(s).name, apiBase:s.apiBase, model:s.model, localBase:s.localBase??DEFAULTS.localBase, localModel:s.localModel??DEFAULTS.localModel, hasLocalKey:!!s.localKey, hotkey:s.hotkey, autoCamera:s.autoCamera, showOverlay:s.showOverlay??DEFAULTS.showOverlay, maxDecisions:s.maxDecisions, objective:s.objective??'', language:s.language??DEFAULTS.language, hasKey:!!s.apiKey});
+export const publicSettings = s => ({provider:s.provider==='local'?'local':'jev', providerName:activeProvider(s).name, apiBase:s.apiBase, model:s.model, localBase:s.localBase??DEFAULTS.localBase, localModel:s.localModel??DEFAULTS.localModel, hasLocalKey:!!s.localKey, hotkey:s.hotkey, autoCamera:s.autoCamera, showOverlay:s.showOverlay??DEFAULTS.showOverlay, autoReport:s.autoReport!==false, maxDecisions:s.maxDecisions, objective:s.objective??'', language:s.language??DEFAULTS.language, hasKey:!!s.apiKey});
 // For the extension's own popup only: the stored keys, so the form can show them masked.
 export const privateSettings = s => ({...publicSettings(s), apiKey:s.apiKey??'', localKey:s.localKey??''});
 export function prepareQuestions(body) {

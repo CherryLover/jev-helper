@@ -375,7 +375,8 @@ function operationalGoals(api, catalog, snapshot, groups, memory = {}) {
   const { units } = snapshot.raw, s = snapshot.state;
   const ground = units.filter(u => u.type === api.ObjectType.Vehicle && u.primaryWeapon && !catalog[u.name]?.harvester && !catalog[u.name]?.naval && catalog[u.name]?.category !== 'AirPower');
   const aircraft = units.filter(u => catalog[u.name]?.aircraft && u.type !== api.ObjectType.Building);
-  const target = Math.min(24, Math.max(12, Math.ceil((s.nearbyEnemyCount ?? 0) * 1.5)));
+  const escalation = s.combatAssessment?.level ?? 0;
+  const target = Math.min(24, Math.max(12, Math.ceil((s.nearbyEnemyCount ?? 0) * 1.5)) + 4 * escalation);
   s.objective = memory.objective ? `Mission objective: ${memory.objective}. Find and destroy what the objective names; do not merely survive near our own base.` : 'Win this skirmish by finding and destroying the enemy base, not merely surviving near our own base.';
   s.forceGoal = { groundCombatVehicles: { current:ground.length, target }, aircraft:{current:aircraft.length,target:4},
     attackThreshold:s.forceReadiness?.threshold ?? ATTACK_FORCE_SIZE, ready:s.forceReadiness?.ready ?? false, mobileAntiAir:{current:s.mobileAntiAirCount,attackMinimum:s.airThreatCount>0&&(s.forceReadiness?.aaProducible??true)?ATTACK_AA_ESCORTS:0},
@@ -385,6 +386,7 @@ function operationalGoals(api, catalog, snapshot, groups, memory = {}) {
     ['vehicles',api.QueueType.Vehicles,ground.length,target],['aircraft',api.QueueType.Aircrafts,aircraft.length,4],
   ]) {
     const g=groups[id]; if (!g) continue;
+    if (escalation) g.instructions += ` REINFORCE (escalation ${escalation}): attacks are failing; build toward ${desired} before the next assault and prefer units effective against the observed enemy mix over more of the same.`;
     const q=s.queues.find(q=>q.type===queueType);
     const candidates=Object.values(g.actions).filter(a=>a.type==='produce');
     const affordable=candidates.filter(a=>s.uncommittedCredits-a.cost>=s.strategy.reserve);

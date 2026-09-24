@@ -54,6 +54,7 @@ function renderMatchDetail(m){
  const groups=Object.entries(m.groups??{}).map(([id,g])=>`${id} ${g.waitRate}%`).join('，');if(groups)line(tr('matchGroups',{list:groups}));
  if(m.objective)line(tr('matchObjective',{objective:m.objective}));
  line(tr('matchReason',{reason:messages[m.reason]?tr(m.reason):m.reason||'—'}));
+ if(m.reportFile)line(tr('matchReport',{file:m.reportFile}));
  drawChart($('match-economy'),m.history??[],[{key:'credits',label:'creditsLegend',color:'#d9b76f'},{key:'freeCredits',label:'freeLegend',color:'#91cbb1'}],config.language,tr('economyChart'));
  drawChart($('match-decision-chart'),m.history??[],[{key:'decisions',label:'decisionLegend',color:'#d9b76f'}],config.language,tr('decisionChart'));
  drawChart($('match-force'),m.history??[],[{key:'ownUnits',label:'ownUnitsLegend',color:'#91cbb1'},{key:'ownBuildings',label:'ownBuildingsLegend',color:'#d9b76f'},{key:'enemyUnits',label:'enemyUnitsLegend',color:'#ed9383'}],config.language,tr('forceChart'));
@@ -131,7 +132,7 @@ function showProvider(provider){
 function displayConfig(){
  $('api-base').value=config.apiBase;$('model').value=config.model;$('local-base').value=config.localBase;$('local-model').value=config.localModel;
  // Stored keys are shown masked; the eye button reveals them on demand.
- $('api-key').value=config.apiKey??'';$('local-key').value=config.localKey??'';$('objective').value=config.objective??'';showProvider(config.provider);$('hotkey').value=config.hotkey;$('budget').value=config.maxDecisions;$('auto-camera').checked=config.autoCamera;$('show-overlay').checked=config.showOverlay;keyPlaceholder();
+ $('api-key').value=config.apiKey??'';$('local-key').value=config.localKey??'';$('objective').value=config.objective??'';showProvider(config.provider);$('hotkey').value=config.hotkey;$('budget').value=config.maxDecisions;$('auto-camera').checked=config.autoCamera;$('show-overlay').checked=config.showOverlay;$('auto-report').checked=config.autoReport!==false;keyPlaceholder();
 }
 function renderAwareness(s){
  const o=s.observation;$('awareness').hidden=!o;$('no-battle').hidden=!!o;
@@ -217,7 +218,12 @@ $('show-overlay').addEventListener('change',async()=>{
  try{const result=await rpc({type:'SET_OVERLAY',showOverlay:input.checked});config.showOverlay=result.showOverlay;notify(config.showOverlay?'overlayEnabled':'overlayDisabled',true);}
  catch(e){input.checked=config.showOverlay;notice(e.message);}finally{input.disabled=false;}
 });
-$('settings').addEventListener('input',e=>{if(e.target.id==='show-overlay')return;dirty=true;if(testState.state!=='idle')showTest('idle');const field=Object.keys(FIELD_IDS).find(f=>FIELD_IDS[f]===e.target.id);if(field)clearFieldError(field);if(lastStatus)displayStatus(lastStatus);});
+$('auto-report').addEventListener('change',async()=>{
+ const input=$('auto-report');input.disabled=true;
+ try{const result=await rpc({type:'SET_AUTO_REPORT',autoReport:input.checked});config.autoReport=result.autoReport;notify(config.autoReport?'autoReportOn':'autoReportOff',true);}
+ catch(e){input.checked=config.autoReport!==false;notice(e.message);}finally{input.disabled=false;}
+});
+$('settings').addEventListener('input',e=>{if(e.target.id==='show-overlay'||e.target.id==='auto-report')return;dirty=true;if(testState.state!=='idle')showTest('idle');const field=Object.keys(FIELD_IDS).find(f=>FIELD_IDS[f]===e.target.id);if(field)clearFieldError(field);if(lastStatus)displayStatus(lastStatus);});
 for(const eye of document.querySelectorAll('[data-reveal]'))eye.addEventListener('click',()=>{const input=$(eye.dataset.reveal),show=input.type==='password';input.type=show?'text':'password';eye.setAttribute('aria-pressed',String(show));eye.title=tr(show?'hideKey':'showKey');eye.setAttribute('aria-label',eye.title);input.focus();});
 $('hotkey').addEventListener('keydown',e=>{if(e.key==='Tab')return;e.preventDefault();const value=hotkeyFromEvent(e);if(value){$('hotkey').value=value;dirty=true;clearFieldError('hotkey');if(testState.state!=='idle')showTest('idle');$('start').disabled=true;notify('hotkeyChanged',true);}});
 $('settings').addEventListener('submit',async e=>{

@@ -75,12 +75,13 @@ export function specialGroups(api, catalog, snapshot, memory, groups) {
       if (building.garrison.count && building.hitPoints / building.maxHitPoints < 0.45)
         garrison(`evacuate_${building.id}`, `Evacuate ${building.garrison.count} infantry from badly damaged building #${building.id}.`,
           { type: 'special', kind: 'evacuate_garrison', ids: [building.id], order: { type: api.OrderType.DeploySelected } });
-    } else if (building.garrison.canOccupy && !building.garrison.count && distance(base.tile, building.tile) < 28) {
+    } else if (building.garrison.canOccupy && !building.garrison.count && (distance(base.tile, building.tile) < 28 || (memory.forwardPoint && distance(memory.forwardPoint, building.tile) <= 14))) {
+      const forward = !(distance(base.tile, building.tile) < 28);
       const candidates = infantry.filter((u) => catalog[u.name]?.occupier && idle(u, memory, tick) && u.id !== memory.scoutId)
         .sort((a, b) => distance(a.tile, building.tile) - distance(b.tile, building.tile))
         .slice(0, Math.min(3, building.garrison.capacity, Math.max(0, infantry.length - 2)));
       if (candidates.length)
-        garrison(`occupy_${building.id}`, `Garrison ${candidates.length} infantry in civilian building #${building.id} at (${building.tile.rx},${building.tile.ry}); protect base approaches.`,
+        garrison(`occupy_${building.id}`, `Garrison ${candidates.length} infantry in civilian building #${building.id} at (${building.tile.rx},${building.tile.ry}); ${forward ? 'forward strongpoint next to the attack target: fire from cover instead of trading units in the open' : 'protect base approaches'}.`,
           { type: 'special', kind: 'garrison', ids: candidates.map((u) => u.id), targetId: building.id,
             order: { type: api.OrderType.Occupy, target: { objectId: building.id } } });
     }

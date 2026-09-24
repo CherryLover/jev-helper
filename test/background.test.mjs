@@ -259,3 +259,21 @@ test('settings save without site access; starting and testing then ask for autho
   const view=await app.handle({type:'GET_SETTINGS'},extension);assert.equal(view.permitted,true);assert.equal(view.localKey,'lan-token');
   await app.handle({type:'START',tabId:7},extension);assert.equal((await app.getSession(7)).running,true);
 });
+
+test('a finished match saves a battle report to Downloads/jev-reports unless disabled; the overlay shows both sides\' losses',async()=>{
+  const downloads=[];const shared={local:{settings:{...DEFAULTS,apiKey:'test-only-secret'}},session:{}};
+  const x=await setup(async()=>answer(),shared);x.c.downloads={download:async o=>{downloads.push(o);return 1;}};
+  await x.app.handle(x.request,sender);
+  await x.app.handle({type:'EVENT',token:x.s.token,event:{kind:'observation',tick:101,credits:5000,state:{self:{credits:5000},ownArmyCount:6,gameSeconds:10},ledger:{ownUnits:6,ownBuildings:4,enemyUnits:2,enemyBuildings:1,ownBuilt:3,ownUnitsLost:2,ownBuildingsLost:1,enemyUnitsDestroyed:9,enemyBuildingsDestroyed:3}}},sender);
+  const overlay=await x.app.handle({type:'OVERLAY_STATUS'},sender);
+  assert.deepEqual(overlay.losses,{ownUnits:2,ownBuildings:1,enemyUnits:9,enemyBuildings:3});
+  await x.app.handle({type:'STOP',tabId:7},extension);
+  assert.equal(downloads.length,1);assert.match(downloads[0].filename,/^jev-reports\/jev-report-\d{8}-\d{6}\.json$/);assert.equal(downloads[0].saveAs,false);
+  const body=JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(downloads[0].url.split(',')[1]),ch=>ch.charCodeAt(0))));
+  assert.equal(body.match.decisions,1);assert.ok(body.entries.some(e=>e.kind==='decision'));assert.equal(body.stats.decisions,1);assert.doesNotMatch(JSON.stringify(body),/test-only-secret/);
+  const {matches}=await x.app.handle({type:'MATCHES_LIST'},extension);assert.equal(matches[0].reportFile,downloads[0].filename);
+  await assert.rejects(x.app.handle({type:'SET_AUTO_REPORT',autoReport:false},sender));
+  assert.deepEqual(await x.app.handle({type:'SET_AUTO_REPORT',autoReport:false},extension),{autoReport:false});
+  await x.app.handle({type:'START',tabId:7},extension);await x.app.handle({type:'STOP',tabId:7},extension);
+  assert.equal(downloads.length,1,'no report when disabled');assert.equal((await x.app.handle({type:'GET_SETTINGS'},extension)).autoReport,false);
+});

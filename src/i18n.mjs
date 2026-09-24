@@ -1,4 +1,6 @@
 export const messages = {
+ ownUnitsLost:['我方人员损失','Own units lost'],enemyUnitsKilled:['击毁敌方人员','Enemy units killed'],ownBuildingsLost:['我方建筑损失','Own structures lost'],enemyBuildingsKilled:['击毁敌方建筑','Enemy structures destroyed'],
+ autoReport:['对局结束后自动保存战报到「下载 / jev-reports」','Save a battle report to Downloads/jev-reports when a match ends'],autoReportHint:['立即保存。战报包含这场的战绩、资金 / 兵力 / 战损曲线和全部决策日志（不含密钥）。','Saved immediately. The report holds this match’s record, credit / force / loss curves and its full decision log (no keys).'],autoReportOn:['已开启自动保存战报。','Automatic battle reports enabled.'],autoReportOff:['已关闭自动保存战报。','Automatic battle reports disabled.'],matchReport:['战报文件：{file}','Report file: {file}'],
  showOverlay:['托管时显示悬浮状态窗','Show floating status while autopilot runs'],
  overlayHint:['立即保存。仅在托管开启时显示；停止托管后自动隐藏。关闭展示不影响托管。','Saved immediately. Visible only during autopilot; hidden when stopped. Hiding it does not stop control.'],
  overlayEnabled:['已允许悬浮状态窗，开启托管时显示。','Floating status enabled. It appears while autopilot runs.'],

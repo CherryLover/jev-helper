@@ -1,4 +1,6 @@
 import { isAirSupport } from './werhd-jev-strategy.mjs';
+import { isCapturable } from './werhd-jev-catalog.mjs';
+export const ATTACK_STUCK_TICKS = 2700, CAPTURE_RESENDS = 3;
 // All tactical choices and spatial searches live in the ordinary player script.
 const distance = (a, b) => Math.hypot(a.rx - b.rx, a.ry - b.ry);
 const idle = (unit, memory, tick) => unit.isIdle && tick - (memory.specialOrders?.get(unit.id)?.tick ?? -10000) > 450;
@@ -121,15 +123,36 @@ export function specialGroups(api, catalog, snapshot, memory, groups) {
   // Repair huts near the base or near any of our units: a broken bridge on the advance route matters too.
   const huts = civilians.filter((u) => catalog[u.name]?.bridgeRepairHut && (distance(base.tile, u.tile) < 40 || units.some((o) => distance(o.tile, u.tile) < 25)));
   const engineers = units.filter((u) => catalog[u.name]?.engineer);
+  // Is the army stuck? The same attack target re-ordered for a long time without being destroyed is
+  // the usual sign of a land route cut by a destroyed bridge. Re-issuing the order keeps the clock.
+  const mission = memory.mission;
+  memory.attackSince ??= new Map();
+  if (mission?.mode === 'attack' && mission.targetId !== undefined && !memory.attackSince.has(mission.targetId)) memory.attackSince.set(mission.targetId, tick);
+  const stuckFor = mission?.mode === 'attack' && mission.targetId !== undefined ? tick - (memory.attackSince.get(mission.targetId) ?? tick) : 0;
+  const stuckName = enemies.find((e) => e.id === mission?.targetId)?.name ?? memory.enemyBuildings?.get(mission?.targetId)?.name;
+  const stuckTarget = stuckFor > ATTACK_STUCK_TICKS || snapshot.state.combatAssessment?.staleAttack ? `${catalog[stuckName]?.label ?? stuckName ?? 'the target'} #${mission?.targetId}` : '';
+  const damagedBridges = bridges.filter((b) => Number.isFinite(b.hitPoints) && b.maxHitPoints > 0 && b.hitPoints < b.maxHitPoints).length;
+  const bridgeUrgent = !!stuckTarget || damagedBridges > 0;
+  const bridgeWhy = [stuckTarget && `our attack on ${stuckTarget} has made no progress for ${Math.max(stuckFor, ATTACK_STUCK_TICKS)} ticks, most likely because a destroyed bridge cuts the land route`, damagedBridges && `${damagedBridges} damaged bridge piece${damagedBridges > 1 ? 's are' : ' is'} visible`].filter(Boolean).join('; ');
+  // Bridge repair comes first: it reopens the route the whole army needs.
+  for (const hut of huts.slice(0, 3)) {
+    const engineer = engineers.filter((u) => idle(u, memory, tick)).sort((a, b) => distance(a.tile, hut.tile) - distance(b.tile, hut.tile))[0];
+    if (engineer && tick - (memory.specialTargets?.get(`repair_${hut.id}`) ?? -10000) > 1200)
+      engineering(`repair_${hut.id}`, `${bridgeUrgent ? `PRIORITY BRIDGE REPAIR (${bridgeWhy})` : 'BRIDGE REPAIR (no known damage yet)'}: send engineer #${engineer.id} into bridge repair hut #${hut.id} at (${hut.tile.rx},${hut.tile.ry}), ${Math.round(distance(engineer.tile, hut.tile))} tiles away. A repaired bridge reopens the land route; if the bridge is intact the order is simply rejected and nothing is lost.`,
+        { type: 'special', kind: 'repair_bridge', ids: [engineer.id], targetId: hut.id,
+          order: { type: api.OrderType.Repair, target: { objectId: hut.id } }, auto: bridgeUrgent ? 2 : undefined });
+  }
   // Capture targets: neutral structures first (technology buildings, outposts), then enemy economic or
   // production buildings with no armed enemy within nine tiles. Walls, defenses, huts and garrisonable
   // civilian houses are never capture targets.
   const enemyIds = new Set(enemies.map((u) => u.id));
   const armedNear = (tile) => enemies.some((e) => (e.primaryWeapon || catalog[e.name]?.weapon?.damage > 0) && distance(e.tile, tile) <= 9);
   const captureTargets = hostile
-    .filter((u) => u.type === api.ObjectType.Building && !own.has(u.id) && !u.garrison && !catalog[u.name]?.wall && !catalog[u.name]?.isBaseDefense && !catalog[u.name]?.bridgeRepairHut && !(catalog[u.name]?.weapon?.damage > 0))
+    .filter((u) => u.type === api.ObjectType.Building && !own.has(u.id) && !u.garrison && !catalog[u.name]?.wall && !catalog[u.name]?.isBaseDefense && !catalog[u.name]?.bridgeRepairHut && !(catalog[u.name]?.weapon?.damage > 0) && !memory.uncapturable?.has(u.id))
     .map((u) => ({ unit: u, neutral: !enemyIds.has(u.id), defended: armedNear(u.tile), dist: Math.min(...[base, ...engineers].map((o) => distance(o.tile, u.tile))) }))
-    .filter((c) => c.neutral || (!c.defended && (catalog[c.unit.name]?.refinery || catalog[c.unit.name]?.factory || catalog[c.unit.name]?.yard || catalog[c.unit.name]?.power > 0 || (catalog[c.unit.name]?.techLevel ?? 0) >= 2)))
+    // Neutral targets must be real technology buildings; lamp posts and pipes owned by a civilian
+    // house cannot be captured and only trap the engineer in a retry loop.
+    .filter((c) => c.neutral ? isCapturable(catalog[c.unit.name], c.unit.name) : (!c.defended && (catalog[c.unit.name]?.refinery || catalog[c.unit.name]?.factory || catalog[c.unit.name]?.yard || catalog[c.unit.name]?.power > 0 || (catalog[c.unit.name]?.techLevel ?? 0) >= 2)))
     .sort((a, b) => Number(b.neutral) - Number(a.neutral) || Number(a.defended) - Number(b.defended) || a.dist - b.dist)
     .slice(0, 4);
   memory.captureTargets = captureTargets.map((c) => c.unit.id);
@@ -139,20 +162,13 @@ export function specialGroups(api, catalog, snapshot, memory, groups) {
     engineering(`capture_${c.unit.id}`, `${c.neutral ? 'CAPTURE (neutral)' : 'CAPTURE (enemy, undefended)'}: send engineer #${engineer.id} into ${catalog[c.unit.name]?.label ?? c.unit.name} #${c.unit.id} at (${c.unit.tile.rx},${c.unit.tile.ry}), ${Math.round(distance(engineer.tile, c.unit.tile))} tiles away${c.defended ? '; armed enemies nearby, risky' : ''}. The engineer is consumed; the building becomes ours.`,
       { type: 'special', kind: 'capture', ids: [engineer.id], targetId: c.unit.id, order: { type: api.OrderType.Capture, target: { objectId: c.unit.id } }, auto: c.neutral && !c.defended ? 2 : c.defended ? undefined : 3 });
   }
-  for (const hut of huts.slice(0, 3)) {
-    const engineer = engineers.find((u) => idle(u, memory, tick));
-    if (engineer && tick - (memory.specialTargets?.get(`repair_${hut.id}`) ?? -10000) > 1200)
-      engineering(`repair_${hut.id}`, `Inspect and repair the bridge associated with visible hut #${hut.id}; engineer #${engineer.id}. A healthy bridge will reject repair.`,
-        { type: 'special', kind: 'repair_bridge', ids: [engineer.id], targetId: hut.id,
-          order: { type: api.OrderType.Repair, target: { objectId: hut.id } } });
-  }
   const engineersWanted = Math.min(2, captureTargets.length) + (huts.length ? 1 : 0);
   if (engineersWanted > engineers.length && freeQueue(api.QueueType.Infantry) && snapshot.state.self.credits > 1800) {
     const engineer = available.find((u) => catalog[u.name]?.engineer && afford(catalog[u.name], 1200));
     const first = captureTargets[0];
     if (engineer) addProduction(group('infantry', ''), { ...engineer, queue: api.QueueType.Infantry },
-      first ? `OBJECTIVE: train an engineer to capture ${catalog[first.unit.name]?.label ?? first.unit.name} #${first.unit.id}${captureTargets.length > 1 ? ` and ${captureTargets.length - 1} more capturable structure${captureTargets.length > 2 ? 's' : ''}` : ''}` : 'Train one engineer for visible bridge repair',
-      undefined, { auto: first && snapshot.state.self.credits >= catalog[engineer.name].cost + 1500 ? 3 : undefined });
+      huts.length && bridgeUrgent ? `PRIORITY: train an engineer to repair the bridge (${bridgeWhy})` : first ? `OBJECTIVE: train an engineer to capture ${catalog[first.unit.name]?.label ?? first.unit.name} #${first.unit.id}${captureTargets.length > 1 ? ` and ${captureTargets.length - 1} more capturable structure${captureTargets.length > 2 ? 's' : ''}` : ''}` : 'Train one engineer for visible bridge repair',
+      undefined, { auto: (first || bridgeUrgent) && snapshot.state.self.credits >= catalog[engineer.name].cost + 1500 ? 3 : bridgeUrgent ? 3 : undefined });
   }
   for (const bridge of bridges.slice(0, 12)) {
     const tile = { rx: bridge.x, ry: bridge.y };
@@ -299,12 +315,15 @@ export function maintainSpecial(api, memory, emit) {
       if (own.has(action.targetId)) return done('completed');
       if (!engineer) return target ? done('engineer_lost') : done('incomplete');
       if (!target && tick - task.started > 600) return done('target_lost');
-      if (tick - task.started > 2400) return done('timeout');
+      // An engineer that goes idle next to its target again and again is being refused: stop and never offer it again.
+      const giveUp = (result) => { (memory.uncapturable ??= new Set()).add(action.targetId); return done(result); };
+      if (tick - task.started > 2400) return giveUp('timeout');
+      if (target && engineer.isIdle && tick - task.submitted >= 150 && (task.resends ?? 0) >= CAPTURE_RESENDS) return giveUp('uncapturable');
       memory.specialOrders.set(engineer.id, { tick, kind: 'capture' });
       if (target && engineer.isIdle && tick - task.submitted >= 150) {
         const execution = executeSpecial(api, action);
         if (!execution.accepted) return done('rejected');
-        task.submitted = tick;
+        task.submitted = tick; task.resends = (task.resends ?? 0) + 1;
         emit({ kind: 'micro', tick, description: `capture: 工程师 #${engineer.id} 重新前往 #${action.targetId}`, targetId: action.targetId, ids: [engineer.id] });
       }
       return true;

@@ -1,7 +1,7 @@
 import { specialGroups, executeSpecial, rememberSpecial, maintainSpecial } from "./werhd-jev-special.mjs";
 import { assessStrategy, investmentGroups, chooseBuildingSite, chooseRallySite, weaponEffectiveness, effectiveness, infantryProfile, scoutScore, currentWeapon as combatWeapon, activeWeapons, canFireAt, baseThreats, ATTACK_FORCE_SIZE, ATTACK_AA_ESCORTS, vehicleOptions } from "./werhd-jev-strategy.mjs";
 import { updateCamera } from "./werhd-jev-camera.mjs";
-import { refreshCatalog } from "./werhd-jev-catalog.mjs";
+import { refreshCatalog, isDecoration } from "./werhd-jev-catalog.mjs";
 // Ordinary page-side player: every observation and command uses window.werhd.
 // Bundled into the browser extension; transport and credentials live outside the game page.
 
@@ -602,7 +602,7 @@ export function candidateGroups(api, catalog, snapshot, memory) {
   groups.deployment.criteria.wait =
     "Preserve current deployment if there is no useful posture change; avoid leaving an engaged GI undeployed when its deployed weapon is more effective.";
   for (const enemy of enemies)
-    if (enemy.type === api.ObjectType.Building)
+    if (enemy.type === api.ObjectType.Building && !isDecoration(catalog[enemy.name], enemy.name))
       memory.enemyBuildings.set(enemy.id, {
         id: enemy.id,
         name: enemy.name,
@@ -675,8 +675,9 @@ export function candidateGroups(api, catalog, snapshot, memory) {
           y: threatening[0].tile.ry,
         },
       );
+    // Flags, lamp posts and other decorations owned by the enemy house are not targets.
     const targets = enemies
-      .filter((e) => e.type === api.ObjectType.Building)
+      .filter((e) => e.type === api.ObjectType.Building && !isDecoration(catalog[e.name], e.name))
       .sort(
         (a, b) =>
           Number(!!catalog[b.name]?.yard) - Number(!!catalog[a.name]?.yard),

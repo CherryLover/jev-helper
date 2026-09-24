@@ -448,7 +448,8 @@ function recoveryGroups(api, catalog, snapshot, groups) {
   if (!targetQueue?.size && s.self.credits >= Math.min(500,required)) {
     const key=`recover_${candidate.name}`;
     groups[category].criteria[key]=`SURVIVAL: rebuild ${r.label} to restore ${miner || hasYard?'ore income':'construction'}. Cost ${r.cost}; stop discretionary investment until recovery completes.`;
-    groups[category].actions[key]={type:'produce',name:candidate.name,queue,cost:r.cost,minCredits:Math.min(500,required)};
+    // Survival rebuilds are never optional: after two declined turns the executor builds it anyway.
+    groups[category].actions[key]={type:'produce',name:candidate.name,queue,cost:r.cost,minCredits:Math.min(500,required),auto:2};
   }
   if (s.self.credits >= required) return;
   const g=groups.salvage ??= {instructions:'Recover a destroyed economy or construction capability. Cancel discretionary spending and sell expendable technology to fund recovery. Preserve the factory and all prerequisites needed to rebuild.',criteria:{wait:'Wait only when no safe liquidation is available.'},actions:{wait:{type:'wait'}}};

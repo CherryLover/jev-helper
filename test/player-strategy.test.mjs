@@ -86,6 +86,7 @@ assert.ok(!Object.values(groups.salvage.actions).some(a=>a.type==='sell'&&a.obje
 assert.ok(!Object.values(groups.vehicles.actions).some(a=>a.type==='produce'),'do not spend recovery money on tanks');
 credits=700;snap=collectState(api,catalog);groups=candidateGroups(api,catalog,snap,memory);
 assert.ok(groups.construction.actions.recover_REF);
+assert.equal(groups.construction.actions.recover_REF.auto,2,'a survival rebuild runs automatically after two declined turns');
 
 // If construction itself is lost, the existing public rules can identify the MCV and its prerequisites.
 catalog.MCV={deploysInto:'YARD',cost:3000,label:'Construction vehicle',prerequisite:['REPAIR']};

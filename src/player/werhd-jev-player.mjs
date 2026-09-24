@@ -833,6 +833,11 @@ export function maintainBattle(api, catalog, memory, emit) {
       api.tick() - (memory.specialOrders?.get(u.id)?.tick ?? -10000) > 450 &&
       u.primaryWeapon,
   );
+  // Ships defend themselves like ground units: any enemy in range is engaged, even during a
+  // model-issued strike or scouting order. They never join land missions or corridor clearing.
+  const naval = own.filter(
+    (u) => u.type !== api.ObjectType.Building && catalog[u.name]?.naval && !catalog[u.name]?.harvester && u.primaryWeapon,
+  );
   const living = new Set(own.map((u) => u.id));
   const mission = memory.mission;
   const defending = mission?.mode === 'defend';
@@ -867,7 +872,7 @@ export function maintainBattle(api, catalog, memory, emit) {
     const buildings=own.filter(u=>u.type===api.ObjectType.Building);
     const base=buildings.find(u=>catalog[u.name]?.yard)??buildings[0];
     const exits=buildings.filter(b=>catalog[b.name]?.refinery||catalog[b.name]?.factory==='UnitType');
-    const clearing=mobile.filter(u=>u.type===api.ObjectType.Vehicle&&u.isIdle&&!u.isDeployed&&
+    const clearing=mobile.filter(u=>u.type===api.ObjectType.Vehicle&&!catalog[u.name]?.naval&&u.isIdle&&!u.isDeployed&&
       !(defending && defenseThreats.length && mission.ids.includes(u.id))&&
       !enemies.some(e=>distance(e.tile,u.tile)<10)&&exits.some(b=>distance(u.tile,b.tile)<6)&&
       tick-(memory.orders.get(u.id)?.tick??-10000)>150);
@@ -907,7 +912,7 @@ export function maintainBattle(api, catalog, memory, emit) {
   }
   // Mechanics: focus on a reachable in-range enemy, without replacing the model's macro mission.
   let issued = 0;
-  for (const u of mobile) {
+  for (const u of [...mobile, ...naval]) {
     if (tick - (memory.postureOrders?.get(u.id) ?? -1000) < 20) continue;
     const last = memory.orders.get(u.id);
     if (last && tick - last.tick < 18) continue;
@@ -1029,11 +1034,13 @@ export async function attachJevPlayer(api, options = {}) {
     options.onEvent?.(event);
     if (options.debug && event.kind !== "observation") console.info("[werhd-jev]", event);
   };
+  let lastMicroAt = -Infinity, lastDecideAt = -Infinity;
   const stop = (reason = "manual") => {
     if (!status.running) return;
     status.running = false;
     clearTimeout(decisionTimer);
     clearTimeout(microTimer);
+    if (typeof api.offTick === "function") { try { api.offTick(); } catch {} }
     controller.abort();
     emit({
       kind: "stop",
@@ -1044,6 +1051,7 @@ export async function attachJevPlayer(api, options = {}) {
   };
   const micro = () => {
     if (!status.running) return;
+    lastMicroAt = performance.now();
     try {
       if (api.tick() !== progressTick) {
         progressTick = api.tick();
@@ -1103,6 +1111,7 @@ export async function attachJevPlayer(api, options = {}) {
   };
   const decide = async () => {
     if (!status.running) return;
+    lastDecideAt = performance.now();
     try {
       const tick = api.tick();
       if (tick === lastTick) return;
@@ -1228,7 +1237,25 @@ export async function attachJevPlayer(api, options = {}) {
         decisionTimer = setTimeout(decide, options.intervalMs ?? 600);
     }
   };
-  emit({ kind: "start", tick: api.tick(), maxDecisions, policy: "v8.8.15-tactics-wait" });
+  // Page timers are throttled to once a minute in a hidden tab while the simulation keeps running.
+  // The game's own tick callback is not, so every tick wakes the loops when a timer is overdue.
+  // The callback itself stays trivial (the game disables handlers that exceed ~8 ms).
+  const microEvery = options.microIntervalMs ?? 150, decideEvery = options.wakeIntervalMs ?? options.intervalMs ?? 600;
+  let wakePending = false, tickDriven = false;
+  const runDue = () => {
+    wakePending = false;
+    if (!status.running) return;
+    const now = performance.now();
+    if (!options.disableMicro && now - lastMicroAt >= microEvery) { clearTimeout(microTimer); micro(); }
+    if (!status.busy && now - lastDecideAt >= decideEvery) { clearTimeout(decisionTimer); decide(); }
+  };
+  if (typeof api.onTick === "function" && !options.disableTickWake) {
+    try {
+      api.onTick(() => { if (!wakePending) { wakePending = true; Promise.resolve().then(runDue); } });
+      tickDriven = true;
+    } catch { tickDriven = false; }
+  }
+  emit({ kind: "start", tick: api.tick(), maxDecisions, policy: "v8.8.15-tactics-wait", tickDriven });
   if (!options.disableMicro) microTimer = setTimeout(micro, 0);
   decisionTimer = setTimeout(decide, 0);
   return { status, stop, catalog, memory, setAutoCamera: (enabled) => { memory.autoCamera = !!enabled; } };

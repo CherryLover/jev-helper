@@ -23,6 +23,25 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
     if(pending.length>=25)flushLog();else flushTimer??=setTimeout(flushLog,1500);
   }
   const readLog=async()=>{await flushLog();const current=(await c.storage.local.get(LOG_KEY))[LOG_KEY];return Array.isArray(current)?current:[];};
+  // Match records: one summary per finished autopilot session, kept for the popup's results panel.
+  const MATCHES_MAX=30;
+  const readMatches=async()=>{const list=(await c.storage.local.get('matches')).matches;return Array.isArray(list)?list:[];};
+  async function finishMatch(tabId,reason){
+    const s=await getSession(tabId);
+    if(!s || s.matchRecorded || !s.startedAt)return;
+    const at=now(),entries=await readLog(),window=entries.filter(e=>e.at>=s.startedAt && e.at<=at),stats=logStats(window);
+    const history=(s.history??[]).map(p=>({at:p.at,gameSeconds:p.gameSeconds,credits:p.credits,freeCredits:p.freeCredits,decisions:p.decisions}));
+    const credits=history.map(p=>p.credits).filter(Number.isFinite),seconds=history.map(p=>p.gameSeconds).filter(Number.isFinite);
+    const settings=await getSettings();
+    const record={id:`${s.startedAt}-${tabId}`,startedAt:s.startedAt,endedAt:at,durationMs:at-s.startedAt,gameSeconds:seconds.length?Math.max(0,seconds.at(-1)-seconds[0]):null,
+      firstTick:s.firstTick??null,lastTick:s.lastTick??null,provider:s.provider??'jev',providerName:s.providerName??'Jev',model:s.model??'',objective:settings.objective??'',reason:String(reason??'').slice(0,40),outcome:s.outcome??'',
+      decisions:s.decisions??0,requests:s.requests??0,failures:s.failures??0,acceptedActions:s.acceptedActions??0,waits:s.waits??0,inputTokens:s.inputTokens??0,latencyAvg:stats.latency.avg,latencyMax:stats.latency.max,
+      credits:{start:credits[0]??null,end:credits.at(-1)??null,max:credits.length?Math.max(...credits):null,min:credits.length?Math.min(...credits):null},armyMax:s.armyMax??null,
+      produced:stats.actions.acceptedProduce,actionsByType:stats.actions.byType,skippedReasons:stats.actions.skippedReasons,
+      groups:Object.fromEntries(Object.entries(stats.groups).map(([id,g])=>[id,{asked:g.asked,waitRate:g.waitRate,top:Object.keys(g.choices)[0]??''}])),history};
+    await serial(stateLocks,'matches',async()=>{const list=await readMatches();await c.storage.local.set({matches:[...list.filter(m=>m.id!==record.id),record].slice(-MATCHES_MAX)});}).catch(()=>{});
+    await patch(tabId,current=>current?.startedAt===s.startedAt?{...current,matchRecorded:true}:current);
+  }
   const getSession = async tabId => (await c.storage.session.get(key(tabId)))[key(tabId)];
   const getSettings = async () => ({...DEFAULTS,...(await c.storage.local.get('settings')).settings});
   const contentConfig = s => ({hotkey:s.hotkey,language:s.language,showOverlay:s.showOverlay,providerName:activeProvider(s).name});
@@ -59,6 +78,7 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
     const s=await patch(tabId,s=>s?{...s,running:false,busyUntil:0,reason,updatedAt:now()}:undefined);
     if(s)logAppend({at:now(),kind:'session',event:'stop',tabId,reason,decisions:s.decisions,failures:s.failures});
     await flushLog();
+    await finishMatch(tabId,reason);
     await notifyOverlay(s);
     if(s)await pageCall(tabId,'stop',reason,s.documentId).catch(()=>{});
     await badge(tabId,'');
@@ -127,7 +147,7 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
       const raw=await response.text();if(raw.length>256000)throw new Error(`${provider.name} 响应过大，已拒绝处理。`);
       const result={...validateAnswer(JSON.parse(raw),questions,provider.name),latencyMs:now()-started};
       await authorize(sender,message.token);
-      await patch(tabId,s=>s?.token===auth.token?{...s,decisions:s.decisions+1,inputTokens:s.inputTokens+result.usage.input_tokens,outputTokens:s.outputTokens+result.usage.output_tokens,latencyMs:result.latencyMs,lastTick:message.body.state.tick,lastChoices:Object.fromEntries(Object.entries(result.answers).map(([id,a])=>[id,a.choice])),model:result.model||s.model||provider.model,error:'',updatedAt:now()}:s);
+      await patch(tabId,s=>s?.token===auth.token?{...s,decisions:s.decisions+1,inputTokens:s.inputTokens+result.usage.input_tokens,outputTokens:s.outputTokens+result.usage.output_tokens,latencyMs:result.latencyMs,lastTick:message.body.state.tick,firstTick:s.firstTick??message.body.state.tick,lastChoices:Object.fromEntries(Object.entries(result.answers).map(([id,a])=>[id,a.choice])),model:result.model||s.model||provider.model,error:'',updatedAt:now()}:s);
       logAppend(decisionEntry({at:now(),tick:message.body.state.tick,provider:provider.id,model:result.model||provider.model,latencyMs:result.latencyMs,usage:result.usage,state:message.body.state,questions,answers:result.answers}));
       return result;
     } catch(e) {
@@ -156,7 +176,7 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
       let next={...s,updatedAt:now()};
       if(e.kind==='observation'){
         next=recordObservation(next,summarize({...e.state,tick:e.tick,self:{...e.state?.self,credits:e.credits}},now()),now());
-        next.mission=e.mission;
+        next.mission=e.mission;next.armyMax=Math.max(s.armyMax??0,next.army??0);
       }
       else {
         next.events=[{at:now(),kind:String(e.kind).slice(0,40),actionType:String(e.action?.type??'').slice(0,40),choice:String(e.choice??e.action?.name??'').slice(0,80),accepted:e.accepted===true,reason:String(e.reason??'').slice(0,80),text:String(e.message??e.description??e.action?.label??e.action?.name??e.choice??e.reason??e.kind).slice(0,240)},...s.events].slice(0,20);
@@ -166,10 +186,11 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
         }
       }
       if(e.kind==='stop'){next.running=false;next.reason=e.reason;next.busyUntil=0;}
+      if(e.kind==='outcome')next.outcome=String(e.result??'').slice(0,24);
       if(e.kind==='error')next.error=String(e.message).slice(0,240);
       return next;
     });
-    if(e.kind==='stop'){inflight.get(tabId)?.abort();await notifyOverlay(await getSession(tabId));await badge(tabId,'');}
+    if(e.kind==='stop'){inflight.get(tabId)?.abort();await flushLog();await finishMatch(tabId,e.reason);await notifyOverlay(await getSession(tabId));await badge(tabId,'');}
     return {ok:true};
   }
   async function handle(message,sender) {
@@ -202,6 +223,9 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
       return {exportedAt:new Date(now()).toISOString(),version:c.runtime.getManifest?.()?.version??'',settings:publicSettings(await getSettings()),stats:logStats(entries),entries};
     }
     if(message.type==='LOG_CLEAR'){pending=[];clearTimeout(flushTimer);flushTimer=undefined;await c.storage.local.remove(LOG_KEY);return {entries:0};}
+    if(message.type==='MATCHES_LIST'){const list=await readMatches();return {matches:list.map(({history,...m})=>({...m,samples:history?.length??0})).reverse()};}
+    if(message.type==='MATCH_GET'){const m=(await readMatches()).find(m=>m.id===message.id);if(!m)throw new Error('未找到该场战绩。');return m;}
+    if(message.type==='MATCHES_CLEAR'){await c.storage.local.remove('matches');return {matches:0};}
     if(message.type==='SET_LANGUAGE' || message.type==='SET_OVERLAY'){
       const settings=await getSettings();
       if(message.type==='SET_LANGUAGE')settings.language=message.language==='en'?'en':'zh-CN';

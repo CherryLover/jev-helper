@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { specialGroups, SIEGE_RANGE } from '../src/player/werhd-jev-special.mjs';
+import { specialGroups, rememberSpecial, releaseGarrisons, SIEGE_RANGE, RELEASE_TICKS, REENTER_COOLDOWN } from '../src/player/werhd-jev-special.mjs';
 import { collectState, candidateGroups, historyHints, rememberChoice, MIN_ATTACK_UNITS } from '../src/player/werhd-jev-player.mjs';
 
 // From four real matches (0.5.6): a road with a pillbox on each side; infantry only ever entered
@@ -94,4 +94,58 @@ test('after six losing repeats the choice is removed for a turn, whatever the mo
   const m2={ ledger:{ownUnitsLost:0,ownBuildingsLost:0,enemyUnitsDestroyed:0,enemyBuildingsDestroyed:0} };
   for (let i = 0; i < 6; i++) { rememberChoice(m2, 'tactics', 'defend_base', {accepted:true}, i * 100); m2.ledger.ownUnitsLost += 2; }
   historyHints(defend, m2, {}, {level:3}); assert.ok(defend.tactics.actions.defend_base, 'defending the base is never removed');
+});
+
+// Leaving buildings once the job is done: a small hand-driven world where time and units can change.
+function exitWorld() {
+  const state = { tick: 5000, own: [], enemies: [], orders: [] };
+  const api = { ObjectType:{Building:2,Infantry:3}, OrderType:{Occupy:8,DeploySelected:10},
+    tick:()=>state.tick, units:r=>r==='self'?state.own:r==='enemy'?state.enemies:[], unit:id=>[...state.own,...state.enemies].find(u=>u.id===id),
+    order:(ids,o)=>{state.orders.push([ids,o]);return true;} };
+  return { api, state, memory:{}, events:[], emit(e){ this.events.push(e); } };
+}
+const heldHouse = (id, x, y, count = 3) => ({ id, name:'HOUSE', type:2, tile:{rx:x,ry:y}, hitPoints:100, maxHitPoints:100, garrison:{count,capacity:5,canOccupy:false,unitIds:[1,2,3].slice(0,count)} });
+
+test('a siege building is left once its pillbox is gone and nothing armed is close, and not before', () => {
+  const w=exitWorld(), emit=w.emit.bind(w);
+  const pill={id:500,name:'PILL',type:2,tile:{rx:70,ry:50},primaryWeapon:{maxRange:5}};
+  w.state.enemies=[pill]; w.state.own=[heldHouse(600,70,56)];
+  rememberSpecial(w.memory, {type:'special',kind:'garrison',ids:[30,31,32],targetId:600,purpose:'siege',defenseId:500}, {accepted:true}, 5000);
+  assert.equal(w.memory.garrisons.get(600).purpose, 'siege');
+  w.state.tick=6000; releaseGarrisons(w.api, w.memory, emit); assert.equal(w.state.orders.length, 0, 'pillbox still standing');
+  w.state.enemies=[{id:700,name:'GI',type:3,tile:{rx:74,ry:58},primaryWeapon:{maxRange:4}}]; // pillbox destroyed, a rifleman nearby
+  w.state.tick=6400; releaseGarrisons(w.api, w.memory, emit); assert.equal(w.state.orders.length, 0, 'never step out next to an armed enemy');
+  w.state.enemies=[];
+  w.state.tick=6500; releaseGarrisons(w.api, w.memory, emit); assert.equal(w.state.orders.length, 0, 'clear only just now');
+  w.state.tick=6500+RELEASE_TICKS.siege; releaseGarrisons(w.api, w.memory, emit);
+  assert.deepEqual(w.state.orders, [[[600],{type:10}]]);
+  assert.ok(!w.memory.garrisons.has(600)); assert.equal(w.memory.evacuatedAt.get(600), 6500+RELEASE_TICKS.siege);
+  assert.match(w.events.at(-1).description, /撤出建筑 #600（目标已清除），3 名步兵归队/);
+});
+
+test('forward and home strongpoints are left after longer quiet periods; an emptied building is forgotten', () => {
+  const w=exitWorld(), emit=w.emit.bind(w);
+  w.state.own=[heldHouse(601,80,56), heldHouse(602,12,12)];
+  rememberSpecial(w.memory, {type:'special',kind:'garrison',ids:[30],targetId:601,purpose:'forward'}, {accepted:true}, 5000);
+  rememberSpecial(w.memory, {type:'special',kind:'garrison',ids:[31],targetId:602,purpose:'base'}, {accepted:true}, 5000);
+  releaseGarrisons(w.api, w.memory, emit);
+  w.state.tick=5000+RELEASE_TICKS.forward; releaseGarrisons(w.api, w.memory, emit);
+  assert.deepEqual(w.state.orders.map(o=>o[0][0]), [601], 'forward first');
+  w.state.tick=5000+RELEASE_TICKS.base; releaseGarrisons(w.api, w.memory, emit);
+  assert.deepEqual(w.state.orders.map(o=>o[0][0]), [601, 602]);
+  rememberSpecial(w.memory, {type:'special',kind:'garrison',ids:[32],targetId:603,purpose:'base'}, {accepted:true}, w.state.tick);
+  releaseGarrisons(w.api, w.memory, emit); assert.ok(!w.memory.garrisons.has(603), 'not ours or empty: forgotten');
+});
+
+test('a building just left is not offered again until the cooldown passes', () => {
+  const own=[unit(1,'YARD',2,10,10), ...squad(6)];
+  const w=world({ own, ...road() });
+  w.memory.evacuatedAt=new Map([[600, 5000]]);
+  let groups={}; specialGroups(w.api, catalog, collectState(w.api, catalog), w.memory, groups);
+  assert.ok(!groups.garrison.actions.siege_600, 'cooling down'); assert.ok(groups.garrison.actions.siege_601);
+  assert.equal(groups.garrison.actions.siege_601.purpose, 'siege'); assert.equal(groups.garrison.actions.siege_601.defenseId, 501);
+  const later=world({ own, ...road(), tick:5000+REENTER_COOLDOWN });
+  later.memory.evacuatedAt=new Map([[600, 5000]]);
+  groups={}; specialGroups(later.api, catalog, collectState(later.api, catalog), later.memory, groups);
+  assert.ok(groups.garrison.actions.siege_600);
 });

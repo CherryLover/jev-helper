@@ -1,6 +1,8 @@
 import { isAirSupport } from './werhd-jev-strategy.mjs';
 import { isCapturable } from './werhd-jev-catalog.mjs';
 export const ATTACK_STUCK_TICKS = 2700, CAPTURE_RESENDS = 3, SIEGE_RANGE = 8, BASE_GARRISON_SPARE = 8;
+// Leaving a building once its job is done: no armed enemy within RELEASE_RADIUS for this long.
+export const RELEASE_RADIUS = 10, RELEASE_TICKS = { siege: 150, forward: 900, base: 2700 }, REENTER_COOLDOWN = 1800;
 // All tactical choices and spatial searches live in the ordinary player script.
 const distance = (a, b) => Math.hypot(a.rx - b.rx, a.ry - b.ry);
 const idle = (unit, memory, tick) => unit.isIdle && tick - (memory.specialOrders?.get(unit.id)?.tick ?? -10000) > 450;
@@ -71,7 +73,7 @@ export function specialGroups(api, catalog, snapshot, memory, groups) {
       posture(`mobilize_${u.id}`, `Pack up ${r.label} #${u.id} into ${r.undeploysInto} to join the mobile force; no visible enemy is in its firing range.`,
         { type: 'special', kind: 'undeploy_morph', ids: [u.id], order: { type: api.OrderType.DeploySelected } });
   }
-  const garrison = group('garrison', 'Use empty civilian buildings as strongpoints. SIEGE options put infantry into a building within reach of an enemy defense (pillbox, tower) so it is destroyed from cover; clear each defense on its own side of the road instead of pushing past it. Base strongpoints only matter when the base is threatened. Preserve at least two mobile infantry. Evacuate a severely damaged occupied building before its occupants are lost. Do not repeatedly interrupt infantry already moving to enter.');
+  const garrison = group('garrison', 'Use empty civilian buildings as strongpoints. SIEGE options put infantry into a building within reach of an enemy defense (pillbox, tower) so it is destroyed from cover; clear each defense on its own side of the road instead of pushing past it. Base strongpoints only matter when the base is threatened. Occupants leave automatically once the job is done and no armed enemy is near, so entering does not lose them for the rest of the match. Preserve at least two mobile infantry. Evacuate a severely damaged occupied building before its occupants are lost. Do not repeatedly interrupt infantry already moving to enter.');
   const occupiers = infantry.filter((u) => catalog[u.name]?.occupier && idle(u, memory, tick) && u.id !== memory.scoutId);
   // Base strongpoints tie infantry down at home; offer them only under threat or with plenty to spare.
   const baseGarrisonWanted = snapshot.state.baseUnderAttack || (snapshot.state.nearbyEnemyCount ?? 0) > 0 || occupiers.length >= BASE_GARRISON_SPARE;
@@ -79,7 +81,8 @@ export function specialGroups(api, catalog, snapshot, memory, groups) {
   // is within reach. Every defense gets its own option, so both sides of a road can be taken.
   const assessment = snapshot.state.combatAssessment;
   const attacksFailing = (assessment?.level ?? 0) >= 1 || !!assessment?.staleAttack;
-  const houses = [...civilians, ...buildings].filter((u) => u.garrison?.canOccupy && !u.garrison.count && !own.has(u.id));
+  const recentlyLeft = (id) => tick - (memory.evacuatedAt?.get(id) ?? -Infinity) < REENTER_COOLDOWN;
+  const houses = [...civilians, ...buildings].filter((u) => u.garrison?.canOccupy && !u.garrison.count && !own.has(u.id) && !recentlyLeft(u.id));
   const center = occupiers.length ? { rx: occupiers.reduce((n, u) => n + u.tile.rx, 0) / occupiers.length, ry: occupiers.reduce((n, u) => n + u.tile.ry, 0) / occupiers.length } : base.tile;
   const enemyDefenses = enemies.filter((e) => e.type === api.ObjectType.Building && (catalog[e.name]?.isBaseDefense || (catalog[e.name]?.weapon?.damage ?? 0) > 0))
     .sort((a, b) => distance(a.tile, center) - distance(b.tile, center)).slice(0, 4);
@@ -96,14 +99,14 @@ export function specialGroups(api, catalog, snapshot, memory, groups) {
     const label = catalog[defense.name]?.label ?? defense.name;
     garrison(`siege_${house.id}`, `${attacksFailing ? 'PRIORITY ' : ''}SIEGE ${label} #${defense.id} at (${defense.tile.rx},${defense.tile.ry}): garrison ${crew.length} infantry into building #${house.id} at (${house.tile.rx},${house.tile.ry}), ${Math.round(distance(house.tile, defense.tile))} tiles from it (its weapon range ${range}). Garrisoned infantry fire from cover and outlast the defense${attacksFailing ? '; attacks in the open are failing' : ''}.`,
       { type: 'special', kind: 'garrison', ids: crew.map((u) => u.id), targetId: house.id,
-        order: { type: api.OrderType.Occupy, target: { objectId: house.id } }, auto: attacksFailing ? 2 : undefined });
+        order: { type: api.OrderType.Occupy, target: { objectId: house.id } }, auto: attacksFailing ? 2 : undefined, purpose: 'siege', defenseId: defense.id });
   }
   for (const building of [...civilians, ...buildings].filter((u) => u.garrison).slice(0, 10)) {
     if (own.has(building.id)) {
       if (building.garrison.count && building.hitPoints / building.maxHitPoints < 0.45)
         garrison(`evacuate_${building.id}`, `Evacuate ${building.garrison.count} infantry from badly damaged building #${building.id}.`,
           { type: 'special', kind: 'evacuate_garrison', ids: [building.id], order: { type: api.OrderType.DeploySelected } });
-    } else if (building.garrison.canOccupy && !building.garrison.count && !sieged.has(building.id) && ((baseGarrisonWanted && distance(base.tile, building.tile) < 28) || (memory.forwardPoint && distance(memory.forwardPoint, building.tile) <= 14 && distance(base.tile, building.tile) >= 28))) {
+    } else if (building.garrison.canOccupy && !building.garrison.count && !sieged.has(building.id) && !recentlyLeft(building.id) && ((baseGarrisonWanted && distance(base.tile, building.tile) < 28) || (memory.forwardPoint && distance(memory.forwardPoint, building.tile) <= 14 && distance(base.tile, building.tile) >= 28))) {
       const forward = !(distance(base.tile, building.tile) < 28);
       const candidates = infantry.filter((u) => catalog[u.name]?.occupier && idle(u, memory, tick) && u.id !== memory.scoutId)
         .sort((a, b) => distance(a.tile, building.tile) - distance(b.tile, building.tile))
@@ -111,7 +114,7 @@ export function specialGroups(api, catalog, snapshot, memory, groups) {
       if (candidates.length)
         garrison(`occupy_${building.id}`, `Garrison ${candidates.length} infantry in civilian building #${building.id} at (${building.tile.rx},${building.tile.ry}); ${forward ? 'forward strongpoint next to the attack target: fire from cover instead of trading units in the open' : 'protect base approaches'}.`,
           { type: 'special', kind: 'garrison', ids: candidates.map((u) => u.id), targetId: building.id,
-            order: { type: api.OrderType.Occupy, target: { objectId: building.id } } });
+            order: { type: api.OrderType.Occupy, target: { objectId: building.id } }, purpose: forward ? 'forward' : 'base' });
     }
   }
   const transport = group('transport', 'Use spare infantry to crew empty transports or IFVs when it improves the current mission. Keep anti-air escorts free when enemy aircraft are present. Unload near combat on safe land; never unload infantry into water.');
@@ -320,6 +323,10 @@ export function rememberSpecial(memory, action, execution, tick) {
     memory.specialTasks.push({ action, started: tick, submitted: tick });
     for (const id of action.ids) memory.specialOrders.set(id, { tick, kind: action.kind });
   }
+  if (action.kind === 'garrison' && execution.accepted) {
+    memory.garrisons ??= new Map();
+    memory.garrisons.set(action.targetId, { purpose: action.purpose ?? 'base', defenseId: action.defenseId, since: tick });
+  }
   if (action.ids?.length && ['garrison', 'load'].includes(action.kind)) {
     memory.specialTasks.push({ action, phase: execution.phase ?? 'entering', started: tick, submitted: tick });
     for (const id of [...action.ids, ...(action.kind === 'load' ? [action.targetId] : [])])
@@ -329,6 +336,7 @@ export function rememberSpecial(memory, action, execution, tick) {
 
 // A multi-step player task; the engine still receives only ordinary independent commands.
 export function maintainSpecial(api, memory, emit) {
+  releaseGarrisons(api, memory, emit);
   if (!memory.specialTasks?.length) return;
   const own = new Map(api.units('self').map((u) => [u.id, u]));
   const tick = api.tick();
@@ -425,4 +433,28 @@ function maintainDemolition(api, memory, task, own, tick, emit) {
   if (tick - task.started >= 1800) return finish('time_limit');
   for (const id of ids) memory.specialOrders.set(id, { tick, kind: action.kind });
   return true;
+}
+
+// Infantry sent into a building comes back out once the job is done, so it rejoins the army instead
+// of sitting there for the rest of the match. Never while an armed enemy is close: stepping out
+// under fire is how units get wasted. A building that was just left is not offered again for a while.
+export function releaseGarrisons(api, memory, emit) {
+  if (!memory.garrisons?.size) return;
+  const tick = api.tick();
+  const own = new Map(api.units('self').map((u) => [u.id, u]));
+  const armed = api.units('enemy').filter((e) => e.primaryWeapon || e.secondaryWeapon);
+  for (const [id, g] of memory.garrisons) {
+    const building = own.get(id);
+    if (!building?.garrison?.count) { memory.garrisons.delete(id); continue; }
+    const threatened = armed.some((e) => distance(e.tile, building.tile) <= RELEASE_RADIUS);
+    const targetAlive = g.purpose === 'siege' && g.defenseId !== undefined && api.unit(g.defenseId) && !own.has(g.defenseId);
+    if (threatened || targetAlive) { g.clearSince = undefined; continue; }
+    g.clearSince ??= tick;
+    if (tick - g.clearSince < (RELEASE_TICKS[g.purpose] ?? RELEASE_TICKS.base)) continue;
+    const execution = executeSpecial(api, { type: 'special', kind: 'evacuate_garrison', ids: [id], order: { type: api.OrderType.DeploySelected } });
+    if (!execution?.accepted) continue;
+    memory.garrisons.delete(id);
+    (memory.evacuatedAt ??= new Map()).set(id, tick);
+    emit({ kind: 'micro', tick, description: `撤出建筑 #${id}（${g.purpose === 'siege' ? '目标已清除' : '附近已无敌人'}），${building.garrison.count} 名步兵归队`, targetId: id, reason: `release_${g.purpose}` });
+  }
 }

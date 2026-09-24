@@ -775,7 +775,11 @@ export function candidateGroups(api, catalog, snapshot, memory) {
     // a small model reads. Defenses guarding the objective come first among the defenses.
     const cap = objectiveTarget ? MAX_ASSAULTS_WITH_OBJECTIVE : MAX_ASSAULTS;
     const guardsObjective = (e) => !!objectiveTarget && Math.hypot(e.tile.rx - objectiveTarget.x, e.tile.ry - objectiveTarget.y) <= OBJECTIVE_GUARD_RADIUS;
-    const defenses = candidates.filter(hitsGround).sort((a, b) => Number(guardsObjective(b)) - Number(guardsObjective(a)) || gap(a) - gap(b)).slice(0, cap === MAX_ASSAULTS ? 3 : 2);
+    // Defenses guarding the objective go first, the one hugging it before the others; the rest by
+    // distance from our troops.
+    const fromObjective = (e) => Math.hypot(e.tile.rx - objectiveTarget.x, e.tile.ry - objectiveTarget.y);
+    const defenses = candidates.filter(hitsGround).sort((a, b) => Number(guardsObjective(b)) - Number(guardsObjective(a)) ||
+      (guardsObjective(a) && guardsObjective(b) ? fromObjective(a) - fromObjective(b) : gap(a) - gap(b))).slice(0, cap === MAX_ASSAULTS ? 3 : 2);
     // Anti-air sites do not take a defense slot but stay at the end of the list: when nothing else is
     // left they are what remains to destroy.
     const rank = (e) => { const r = catalog[e.name] ?? {}; return antiAirOnly(e) ? 5 : r.yard ? 0 : r.factory ? 1 : r.refinery ? 2 : r.power > 0 ? 3 : 4; };

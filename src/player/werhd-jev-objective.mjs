@@ -38,7 +38,9 @@ const DESTROY = /摧毁|消灭|击毁|炸毁|拆除|破坏|打掉|推平|摧垮|
 
 // Objectives are read clause by clause: "摧毁五角大楼，保护白宫" names one target and one building
 // that must never be attacked. A clause without a verb inherits the previous one ("摧毁A和B").
-const CLAUSE = /[，,。.;；！!？?、\n]|和|与|以及|然后|再|\band\b|\bthen\b/i;
+const CLAUSE = /[，,。.;；！!？?、\n]|和|与|以及|然后|再|并且|并|同时|但是|但|\band\b|\bthen\b|\bbut\b|\bwhile\b/i;
+// "不要打白宫" / "do not attack the White House": a negated clause protects what it names.
+const NEGATE = /不要|别|不许|不能|不得|勿|do not|don't|dont|never|avoid|spare/i;
 const escape = (w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // English names match whole words only ("Pent" is not "Pentagon", "destroy everything" is not "Thing").
 const wordIn = (hay, word) => new RegExp(`(^|[^a-z0-9])${escape(word)}([^a-z0-9]|$)`).test(hay);
@@ -46,7 +48,7 @@ export function parseObjective(text) {
   const destroy = [], protect = [];
   let intent = 'destroy';
   for (const clause of String(text ?? '').split(CLAUSE).map(c => c?.trim()).filter(Boolean)) {
-    if (PROTECT.test(clause) && !DESTROY.test(clause)) intent = 'protect';
+    if (NEGATE.test(clause) || PROTECT.test(clause) && !DESTROY.test(clause)) intent = 'protect';
     else if (DESTROY.test(clause)) intent = 'destroy';
     (intent === 'destroy' ? destroy : protect).push(clause.toLowerCase());
   }

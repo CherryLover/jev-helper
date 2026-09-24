@@ -358,7 +358,8 @@ test('with an objective the assault list is shorter and the wait option is one l
   const g = candidateGroups(w.api, catalog, collectState(w.api, catalog), w.memory);
   const assaults = choices(g.tactics).filter(k => k.startsWith('assault_'));
   assert.equal(assaults.length, MAX_ASSAULTS_WITH_OBJECTIVE);
-  assert.equal(assaults.filter(k => ['assault_920', 'assault_921', 'assault_922'].includes(k)).length, 2, 'two defenses, those next to the Pentagon');
+  assert.deepEqual(assaults.filter(k => ['assault_920', 'assault_921', 'assault_922'].includes(k)), ['assault_920', 'assault_921'],
+    'two defense slots, filled by distance from the Pentagon (#920 hugs it) rather than from our troops (#922 is nearest to them)');
   assert.ok(g.tactics.criteria.wait.length < 60);
   const plain = world({ own:[...home(), ...squad(12)], enemies:[...enemyBase(), ...extra] });
   const pg = candidateGroups(plain.api, catalog, collectState(plain.api, catalog), plain.memory);
@@ -394,4 +395,19 @@ test('threat replies: bounded work in a big battle, one report per pass, no walk
   t.calls.length = 0; t.setTick(3000 + FALL_BACK_TICKS + 1); lone.tile = { rx:10, ry:30 };
   maintainBattle(t.api, catalog, t.memory, () => {});
   assert.ok(t.calls.some(c => c[1].includes(40)), 'the mission resumes later');
+});
+
+test('objective clauses: "并 / 同时 / 但 / 不要 / but do not" protect what follows; "和" still lists two targets', () => {
+  for (const text of ['摧毁五角大楼并保护白宫', '摧毁五角大楼同时保护白宫', '摧毁五角大楼但不要打白宫', '摧毁五角大楼但是别碰白宫', 'destroy the Pentagon but do not attack the White House']) {
+    const parsed = parseObjective(text);
+    assert.deepEqual(parsed.words, ['pentagon'], text); assert.deepEqual(parsed.guarded, ['white house'], text);
+    assert.equal(matchesObjective(text, parsed.words, { label:'White House' }, 'CAWHITE'), false, text);
+  }
+  assert.deepEqual(parseObjective('摧毁五角大楼和白宫').words, ['pentagon', 'white house']);
+  assert.deepEqual(parseObjective('destroy the Pentagon and the White House').words, ['pentagon', 'white house']);
+  // Near the base, the White House would otherwise be picked first.
+  catalog.WHITE ??= { label:'White House', armor:'concrete' };
+  const w = world({ own:[...home(), ...squad(12)], enemies:enemyBase(), neutral:[unit(996,'WHITE',2,20,20)] });
+  w.memory.objective = '摧毁五角大楼但不要打白宫';
+  assert.equal(trackObjective(w.api, catalog, w.memory, { rx:10, ry:10 }).id, 990);
 });

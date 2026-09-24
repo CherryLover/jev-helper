@@ -27,6 +27,7 @@ export const messages = {
  creditsLegend:['现有资金','Current credits'],freeLegend:['扣除队列剩余投入','After remaining queue cost'],economyHint:['资金余额及可自由投入估算，不代表收入或利润。','Balance and estimated uncommitted credits, not income or profit.'],
  chartEmpty:['等待真实对局采样','Waiting for match samples'],oneSample:['已记录首个采样点','First sample recorded'],historyNote:['本次开启托管时重新计数；关闭弹窗后托管仍记录。','Counters reset on Start. Active autopilot keeps recording with this popup closed.'],
  settingsTitle:['连接与控制','Connection & controls'],clearKey:['清除密钥','Clear key'],apiKey:['JEV 密钥','JEV API key'],
+ showKey:['显示密钥','Show key'],hideKey:['隐藏密钥','Hide key'],testOk:['✓ {name} 连接成功 · {ms} ms{model}','✓ {name} connected · {ms} ms{model}'],testFail:['✗ {error}','✗ {error}'],
  providerLabel:['模型来源','Model source'],providerJev:['Jev 云端','Jev cloud'],providerLocal:['本地 Laya','Local Laya'],
  providerJevHint:['TypeSafe 托管的 Jev 模型，需要 JEV 密钥，按请求计费。','TypeSafe-hosted Jev. Needs a JEV key; billed per request.'],
  providerLocalHint:['本机运行的 Laya 模型（MLX）。先启动本地服务，再保存并测试连接；不产生 API 费用。','Laya running on this Mac (MLX). Start the local server first, then save and test. No API fees.'],

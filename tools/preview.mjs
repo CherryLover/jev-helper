@@ -12,7 +12,7 @@ window.chrome={permissions:{request:async()=>true},tabs:{query:async()=>[{id:1}]
  if(m.type==='GET_SETTINGS')return {ok:true,value:settings};
  if(m.type==='SET_LANGUAGE'){settings.language=m.language;localStorage.previewLanguage=m.language;return {ok:true,value:{language:m.language}};}
  if(m.type==='SET_OVERLAY'){settings.showOverlay=m.showOverlay;return {ok:true,value:{showOverlay:m.showOverlay}};}
- if(m.type==='TEST_CONNECTION')return {ok:true,value:{latencyMs:settings.provider==='local'?9:123,providerName:settings.providerName,model:settings.provider==='local'?'laya-multilingual-mlx':'jev-1.13'}};
+ if(m.type==='TEST_CONNECTION'){await new Promise(r=>setTimeout(r,1200));if(location.search.includes('testfail'))return {ok:false,error:settings.providerName+' 连接失败，请检查地址、网络或响应格式。'};return {ok:true,value:{latencyMs:settings.provider==='local'?9:123,providerName:settings.providerName,model:settings.provider==='local'?'laya-multilingual-mlx':'jev-1.13'}};}
  if(m.type==='GET_STATUS'){if(status.observation)status.observation.at=Date.now();return {ok:true,value:status};}
  if(m.type==='SAVE_SETTINGS'){const {apiKey,localKey,...rest}=m.settings;settings={...rest,hasKey:!!apiKey||settings.hasKey,hasLocalKey:!!localKey||settings.hasLocalKey,providerName:rest.provider==='local'?'Laya':'Jev'};localStorage.previewProvider=rest.provider;status.providerName=settings.providerName;return {ok:true,value:settings};}
  if(m.type==='CLEAR_KEY'){if(m.provider==='local')settings.hasLocalKey=false;else settings.hasKey=false;status.running=false;return {ok:true,value:{}};}

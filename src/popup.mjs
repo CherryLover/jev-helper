@@ -6,6 +6,9 @@ const $=id=>document.getElementById(id);
 let tabId,config={...DEFAULTS,hasKey:false},lastStatus,dirty=false,refreshing=false,activePanel='battlefield',noticeState;
 const tr=(key,vars)=>t(config.language,key,vars);
 const providerName=()=>config.providerName||'Jev';
+let testState={state:'idle'};
+// The connection probe reports on its own button: testing → ok / fail. Any edit resets it.
+function showTest(state,key,vars){testState={state,key,vars};const btn=$('test-connection');btn.dataset.state=state;btn.disabled=state==='testing';$('test-label').textContent=tr(key??'test',vars);}
 const selectedProvider=()=>$('provider-local').getAttribute('aria-checked')==='true'?'local':'jev';
 const rpc=async message=>{const r=await chrome.runtime.sendMessage(message);if(!r?.ok)throw new Error(r?.error||'插件后台未响应。');return r.value;};
 const format=n=>typeof n==='number'&&Number.isFinite(n)?Math.round(n).toLocaleString(config.language):'—';
@@ -18,6 +21,8 @@ function translate(){
  $('official-site').href=officialWebsiteUrl(config.language);$('official-site').title=tr('officialWebsiteHint');
  $('help-link').href=`help.html?lang=${config.language}`;
  keyPlaceholder();showProvider(selectedProvider());
+ for(const eye of document.querySelectorAll('[data-reveal]')){const on=eye.getAttribute('aria-pressed')==='true';eye.title=tr(on?'hideKey':'showKey');eye.setAttribute('aria-label',eye.title);}
+ if(testState.state!=='idle')showTest(testState.state,testState.key,testState.vars);
  if(noticeState)notice(noticeState.text,noticeState.success,noticeState.key,noticeState.vars);
  if(lastStatus)displayStatus(lastStatus);
 }
@@ -82,7 +87,7 @@ for(const btn of document.querySelectorAll('[data-panel]'))btn.addEventListener(
 for(const [id,language]of [['lang-zh','zh-CN'],['lang-en','en']])$(id).addEventListener('click',async()=>{
  try{await rpc({type:'SET_LANGUAGE',language});config.language=language;translate();}catch(e){notice(e.message);}
 });
-for(const btn of document.querySelectorAll('[data-provider]'))btn.addEventListener('click',()=>{if(selectedProvider()===btn.dataset.provider)return;showProvider(btn.dataset.provider);dirty=true;if(lastStatus)displayStatus(lastStatus);});
+for(const btn of document.querySelectorAll('[data-provider]'))btn.addEventListener('click',()=>{if(selectedProvider()===btn.dataset.provider)return;showProvider(btn.dataset.provider);dirty=true;if(testState.state!=='idle')showTest('idle');if(lastStatus)displayStatus(lastStatus);});
 $('import-config').addEventListener('click',()=>$('config-file').click());
 $('config-file').addEventListener('change',async()=>{
  try{
@@ -93,20 +98,21 @@ $('config-file').addEventListener('change',async()=>{
  }catch(e){notice(e.message);}finally{$('config-file').value='';}
 });
 $('test-connection').addEventListener('click',async()=>{
- if(dirty){notify('saveFirst');return;}$('test-connection').disabled=true;notify('testing',false,{name:providerName()});
- try{const result=await rpc({type:'TEST_CONNECTION'});notify('tested',true,{name:result.providerName||providerName(),ms:result.latencyMs,model:result.model?` · ${result.model}`:''});}catch(e){notice(e.message);}finally{$('test-connection').disabled=false;}
+ if(dirty){notify('saveFirst');return;}notice('');showTest('testing','testing',{name:providerName()});
+ try{const result=await rpc({type:'TEST_CONNECTION'});showTest('ok','testOk',{name:result.providerName||providerName(),ms:result.latencyMs,model:result.model?` · ${result.model}`:''});}catch(e){showTest('fail','testFail',{error:errorText(config.language,e.message)});}
 });
 $('show-overlay').addEventListener('change',async()=>{
  const input=$('show-overlay');input.disabled=true;
  try{const result=await rpc({type:'SET_OVERLAY',showOverlay:input.checked});config.showOverlay=result.showOverlay;notify(config.showOverlay?'overlayEnabled':'overlayDisabled',true);}
  catch(e){input.checked=config.showOverlay;notice(e.message);}finally{input.disabled=false;}
 });
-$('settings').addEventListener('input',e=>{if(e.target.id==='show-overlay')return;dirty=true;if(lastStatus)displayStatus(lastStatus);});
+$('settings').addEventListener('input',e=>{if(e.target.id==='show-overlay')return;dirty=true;if(testState.state!=='idle')showTest('idle');if(lastStatus)displayStatus(lastStatus);});
+for(const eye of document.querySelectorAll('[data-reveal]'))eye.addEventListener('click',()=>{const input=$(eye.dataset.reveal),show=input.type==='password';input.type=show?'text':'password';eye.setAttribute('aria-pressed',String(show));eye.title=tr(show?'hideKey':'showKey');eye.setAttribute('aria-label',eye.title);input.focus();});
 $('hotkey').addEventListener('keydown',e=>{if(e.key==='Tab')return;e.preventDefault();const value=hotkeyFromEvent(e);if(value){$('hotkey').value=value;dirty=true;$('start').disabled=true;notify('hotkeyChanged',true);}});
 $('settings').addEventListener('submit',async e=>{
  e.preventDefault();
  try{
-  const input={language:config.language,provider:selectedProvider(),apiKey:$('api-key').value.trim(),apiBase:$('api-base').value,model:$('model').value,localKey:$('local-key').value.trim(),localBase:$('local-base').value,localModel:$('local-model').value,hotkey:$('hotkey').value,autoCamera:$('auto-camera').checked,showOverlay:$('show-overlay').checked,maxDecisions:Number($('budget').value)};validateSettings(input);
+  const input={language:config.language,provider:selectedProvider(),apiKey:$('api-key').value.trim(),apiBase:$('api-base').value.trim(),model:$('model').value.trim(),localKey:$('local-key').value.trim(),localBase:$('local-base').value.trim(),localModel:$('local-model').value.trim(),hotkey:$('hotkey').value,autoCamera:$('auto-camera').checked,showOverlay:$('show-overlay').checked,maxDecisions:Number($('budget').value)};validateSettings(input);
   if(!await chrome.permissions.request({origins:[originPattern(input.provider==='local'?input.localBase:input.apiBase)]}))throw new Error('未获得 API 访问授权，设置未保存。');
   config=await rpc({type:'SAVE_SETTINGS',settings:input});$('api-key').value='';$('local-key').value='';dirty=false;displayConfig();notify('saved',true);await refresh();
  }catch(error){notice(error.message);}

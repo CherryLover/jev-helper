@@ -4,8 +4,8 @@ export const PROVIDERS = /* @__PURE__ */ Object.freeze({ jev: { id: 'jev', name:
 export function activeProvider(s) {
   const id = s?.provider === 'local' ? 'local' : 'jev', p = PROVIDERS[id];
   return id === 'local'
-    ? { ...p, apiBase: s.localBase ?? DEFAULTS.localBase, apiKey: s.localKey ?? '', model: s.localModel ?? DEFAULTS.localModel }
-    : { ...p, apiBase: s.apiBase ?? DEFAULTS.apiBase, apiKey: s.apiKey ?? '', model: s.model ?? DEFAULTS.model };
+    ? { ...p, apiBase: String(s.localBase ?? DEFAULTS.localBase).trim(), apiKey: String(s.localKey ?? '').trim(), model: String(s.localModel ?? DEFAULTS.localModel).trim() }
+    : { ...p, apiBase: String(s.apiBase ?? DEFAULTS.apiBase).trim(), apiKey: String(s.apiKey ?? '').trim(), model: String(s.model ?? DEFAULTS.model).trim() };
 }
 export const GAME_HOSTS = ['ra2web.github.io', 'staging.wangerhuoda.com', 'wangerhuoda.com', 'www.wangerhuoda.com'];
 export const CHANNEL = 'werhd-jev-extension-v1';

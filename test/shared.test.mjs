@@ -31,6 +31,9 @@ test('two model sources keep separate endpoints and keys; the local source needs
   const p=activeProvider(local);assert.equal(p.id,'local');assert.equal(p.name,'Laya');assert.equal(p.requiresKey,false);assert.equal(p.apiKey,'');assert.equal(apiEndpoint(p.apiBase),'http://127.0.0.1:8742/v1/systemone');
   assert.deepEqual(authHeaders(p),{'Content-Type':'application/json'});assert.equal(authHeaders(activeProvider(jev)).Authorization,'Bearer jev-secret');
   assert.equal(validateSettings({provider:'anything-else'}).provider,'jev');
+  const padded=validateSettings({apiBase:'  https://api.typesafe.ai/v1  ',apiKey:'  padded-key\t',localBase:' http://127.0.0.1:8742/v1 ',localKey:' t ',model:' jev-latest '});
+  assert.equal(padded.apiBase,'https://api.typesafe.ai/v1');assert.equal(padded.apiKey,'padded-key');assert.equal(padded.localBase,'http://127.0.0.1:8742/v1');assert.equal(padded.localKey,'t');assert.equal(padded.model,'jev-latest');
+  const raw=activeProvider({provider:'local',localBase:' http://127.0.0.1:8742/v1 ',localKey:' tok '});assert.equal(raw.apiBase,'http://127.0.0.1:8742/v1');assert.equal(authHeaders(raw).Authorization,'Bearer tok');
   assert.throws(()=>validateSettings({provider:'local',localBase:'http://example.com/v1'}));
   assert.throws(()=>validateSettings({localModel:'bad name!'}));
   const shown=publicSettings(jev);assert.equal(shown.provider,'jev');assert.equal(shown.providerName,'Jev');assert.equal(shown.hasLocalKey,true);assert.equal(shown.localBase,'http://127.0.0.1:8742/v1');

@@ -1,5 +1,5 @@
 import {DEFAULTS, supportedGame, apiEndpoint, originPattern, validateSettings, publicSettings, privateSettings, prepareQuestions, validateAnswer, httpError, activeProvider, authHeaders, hostAllowed, normalizeHost, sanitizeAllowedHosts, providerEndpoint, serviceUrl, PROVIDER_FIELDS} from './shared.mjs';
-import {buildChatRequest, parseChatResponse, modelIds, serviceError} from './openai.mjs';
+import {buildChatRequest, parseChatResponse, modelIds, serviceError, refusesForcedTool} from './openai.mjs';
 import {summarize,recordObservation} from './telemetry.mjs';
 import {LOG_KEY,appendEntries,decisionEntry,eventEntry,logStats} from './logbook.mjs';
 
@@ -15,11 +15,17 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
   // a longer budget; the page is told to wait a little longer than the background does.
   const timeoutFor = provider => provider.id==='openai'?30000:8000;
   // One decision request to whichever provider is selected, returned in Jev's answer shape.
+  // Services (by endpoint and model) that refused a forced function call; they get tool_choice "auto" from then on.
+  const autoToolChoice=new Set();
   async function callModel(provider,{state,questions},signal){
-    const openai=provider.id==='openai';
-    const body=openai?buildChatRequest({model:provider.model,mode:provider.mode,state,questions}):{model:provider.model,state,questions};
-    const response=await fetchImpl(providerEndpoint(provider),{method:'POST',headers:authHeaders(provider),body:JSON.stringify(body),signal,redirect:'error',credentials:'omit',referrerPolicy:'no-referrer'});
-    const raw=await response.text();
+    const openai=provider.id==='openai',endpoint=providerEndpoint(provider),route=`${endpoint} ${provider.model}`;
+    const send=body=>fetchImpl(endpoint,{method:'POST',headers:authHeaders(provider),body:JSON.stringify(body),signal,redirect:'error',credentials:'omit',referrerPolicy:'no-referrer'});
+    const chat=toolChoice=>buildChatRequest({model:provider.model,mode:provider.mode,state,questions,toolChoice});
+    let response=await send(openai?chat(autoToolChoice.has(route)?'auto':'forced'):{model:provider.model,state,questions});
+    let raw=await response.text();
+    if(openai && provider.mode!=='json' && !autoToolChoice.has(route) && refusesForcedTool(response.status,serviceError(raw))){
+      autoToolChoice.add(route);response=await send(chat('auto'));raw=await response.text();
+    }
     if(!response.ok){const detail=openai?serviceError(raw):'';const error=new Error(httpError(response.status,provider.name)+(detail?` ${detail}`:''));error.status=response.status;throw error;}
     if(raw.length>(openai?512000:256000))throw new Error(`${provider.name} 响应过大，已拒绝处理。`);
     let parsed;try{parsed=JSON.parse(raw);}catch{throw new Error(`${provider.name} 返回的内容无法解析。`);}

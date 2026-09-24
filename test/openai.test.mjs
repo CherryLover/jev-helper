@@ -76,6 +76,8 @@ test('OpenAI provider settings: endpoints, cloud or local, key rule and model va
   assert.equal(cloud.kind, 'cloud'); assert.equal(cloud.requiresKey, true); assert.equal(cloud.apiKey, 'k'); assert.equal(cloud.mode, 'tools');
   assert.equal(providerEndpoint(cloud), 'https://relay.example.com/v1/chat/completions');
   assert.equal(serviceUrl('https://relay.example.com/v1/', '/models'), 'https://relay.example.com/v1/models');
+  assert.equal(serviceUrl('https://api.deepseek.com', '/chat/completions'), 'https://api.deepseek.com/chat/completions');
+  assert.equal(serviceUrl('https://api.deepseek.com/', '/models'), 'https://api.deepseek.com/models');
   const lan = activeProvider({provider:'openai', openaiBase:'http://192.168.1.20:11434/v1', openaiMode:'json'});
   assert.equal(lan.kind, 'local'); assert.equal(lan.requiresKey, false); assert.equal(lan.mode, 'json');
   assert.equal(activeProvider({provider:'jev'}).kind, 'cloud'); assert.equal(activeProvider({provider:'local'}).kind, 'local');
@@ -220,4 +222,24 @@ test('a slow chat model gets a longer timeout and more stale-tick room than Jev'
   const jevApp = createBackground(jev.c, {fetchImpl:async () => new Response('{}')}); await jevApp.ready; await jevApp.handle({type:'START', tabId:7}, extension);
   const jevStart = jevScripts.find(x => x.args?.[0] === 'start').args[1];
   assert.equal(jevStart.maxStaleTicks, undefined); assert.equal(jevStart.requestTimeoutMs, undefined);
+});
+
+test('a service that refuses a forced function call is retried once with tool_choice auto and remembered', async () => {
+  const calls = [];
+  const mock = mockChrome({...openaiSettings, openaiModel:'deepseek-flash'});
+  const app = createBackground(mock.c, {fetchImpl:async (url, options) => {
+    const sent = JSON.parse(options.body); calls.push(sent.tool_choice);
+    if (typeof sent.tool_choice === 'object') return new Response(JSON.stringify({error:{message:'Thinking mode does not support this tool_choice'}}), {status:400});
+    return new Response(JSON.stringify(toolReply({tactics:{choice:'attack'}})));
+  }});
+  await app.ready; await app.handle({type:'START', tabId:7}, extension);
+  const s = await app.getSession(7);
+  assert.equal((await app.handle({type:'DECIDE', token:s.token, body}, sender)).answers.tactics.choice, 'attack');
+  assert.equal(calls.length, 2); assert.equal(typeof calls[0], 'object'); assert.equal(calls[1], 'auto');
+  await new Promise(r => setTimeout(r, 5));
+  await app.handle({type:'DECIDE', token:s.token, body}, sender);
+  assert.deepEqual(calls.slice(2), ['auto']); // remembered: no second refusal
+  assert.equal((await app.getSession(7)).failures, 0);
+  const auto = buildChatRequest({model:'m', state:{}, questions, toolChoice:'auto'});
+  assert.equal(auto.tool_choice, 'auto'); assert.match(auto.messages[0].content, /Always answer by calling submit_choices/);
 });

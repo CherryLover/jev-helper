@@ -43,7 +43,9 @@ export function choiceSchema(questions) {
   return { type: 'object', properties, required: Object.keys(questions) };
 }
 
-export function buildChatRequest({ model, mode = 'tools', state, questions }) {
+// toolChoice: 'forced' names the function; 'auto' is for services that refuse a forced call
+// (DeepSeek thinking models, for example), where the prompt asks for the call instead.
+export function buildChatRequest({ model, mode = 'tools', state, questions, toolChoice = 'forced' }) {
   const decisions = Object.fromEntries(Object.entries(questions).map(([id, q]) => [id, { instructions: q.instructions, options: q.criteria }]));
   const user = JSON.stringify({ state: compactState(state), decisions });
   if (mode === 'json') {
@@ -59,9 +61,9 @@ export function buildChatRequest({ model, mode = 'tools', state, questions }) {
   }
   return {
     model,
-    messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: user }],
+    messages: [{ role: 'system', content: toolChoice === 'auto' ? `${SYSTEM} Always answer by calling ${TOOL_NAME}.` : SYSTEM }, { role: 'user', content: user }],
     tools: [{ type: 'function', function: { name: TOOL_NAME, description: 'Submit one option key for every decision group.', parameters: choiceSchema(questions) } }],
-    tool_choice: { type: 'function', function: { name: TOOL_NAME } },
+    tool_choice: toolChoice === 'auto' ? 'auto' : { type: 'function', function: { name: TOOL_NAME } },
   };
 }
 
@@ -113,6 +115,9 @@ export function modelIds(body) {
   const ids = list.map(m => typeof m === 'string' ? m : m?.id ?? m?.name).filter(id => typeof id === 'string' && /^[\w.\/:@+-]{1,160}$/.test(id));
   return [...new Set(ids)].sort((a, b) => a.localeCompare(b)).slice(0, 500);
 }
+
+// A 400 saying the service will not accept a forced function call.
+export const refusesForcedTool = (status, detail) => status === 400 && /tool_choice/i.test(detail);
 
 // The service's own error text, when it sends one, for a clearer failure message.
 export function serviceError(raw) {

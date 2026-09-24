@@ -38,8 +38,9 @@ export function apiEndpoint(value) {
   let u; try { u = new URL(value.trim()); } catch { throw new Error('请输入有效的 API 地址。'); }
   if (u.username || u.password || u.search || u.hash) throw new Error('API 地址不能包含账号、查询参数或片段。');
   if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error('API 地址须以 http:// 或 https:// 开头。');
-  u.pathname = u.pathname.replace(/\/+$/, '');
-  if (!u.pathname.endsWith('/systemone')) u.pathname += '/systemone';
+  // Built as a string: a bare host's path "/" trimmed to "" would be reset to "/" by the URL object.
+  const path = u.pathname.replace(/\/+$/, '');
+  u.pathname = path.endsWith('/systemone') ? path : `${path}/systemone`;
   return u.href;
 }
 // An OpenAI-style service path under the configured base; a pasted full endpoint is trimmed back to the base.

@@ -3,9 +3,11 @@
 // so the match is done here and offered to the model as a ready-made option.
 const distance = (a, b) => Math.hypot(a.rx - b.rx, a.ry - b.ry);
 
-// Chinese names -> English keywords found in rule labels (lower case, substring match).
+// Chinese names -> English keywords found in rule labels (lower case, whole-word match). A landmark
+// can be built from several pieces with their own labels: on the Washington map the Pentagon is
+// four buildings, "RA2 Wash Pent A" to "D" (CAWA2A-D), and none of them is labelled "Pentagon".
 export const OBJECTIVE_NAMES = [
-  [/五角大楼|五角大厦/, ['pentagon']],
+  [/五角大楼|五角大厦/, ['pentagon', 'wash pent']],
   [/白宫/, ['white house']],
   [/自由女神/, ['statue of liberty', 'liberty']],
   [/克里姆林/, ['kremlin']],
@@ -55,8 +57,9 @@ export function parseObjective(text) {
   const namesIn = (clauses) => {
     const out = new Set();
     for (const c of clauses) for (const [pattern, words] of OBJECTIVE_NAMES) {
-      if (pattern.test(c)) words.forEach(w => out.add(w));
-      for (const w of words) if (w.length >= 4 && wordIn(c, w)) out.add(w);
+      // Naming a building in either language brings in every label it is known by ("Pentagon" also
+      // finds the "Wash Pent" pieces).
+      if (pattern.test(c) || words.some(w => w.length >= 4 && wordIn(c, w))) words.forEach(w => out.add(w));
     }
     return out;
   };
@@ -98,7 +101,8 @@ export function trackObjective(api, catalog, memory, from) {
   }
   if (!target || target.done) {
     const words = memory.objectiveKeys.words;
-    const origin = from ?? hostile[0]?.tile;
+    // After one piece of a multi-piece landmark falls, the next one is the piece beside it.
+    const origin = target?.done ? { rx: target.x, ry: target.y } : from ?? hostile[0]?.tile;
     const match = hostile.map(u => ({ u, how: u.type === B && !memory.objectiveDone.has(u.id) && matchesObjective(text, words, catalog[u.name], u.name) }))
       .filter(m => m.how).sort((a, b) => (a.how === 'name' ? 0 : 1) - (b.how === 'name' ? 0 : 1) || (origin ? distance(a.u.tile, origin) - distance(b.u.tile, origin) : 0))[0]?.u;
     if (match) target = memory.objectiveTarget = { id: match.id, name: match.name, label: catalog[match.name]?.label ?? match.name,

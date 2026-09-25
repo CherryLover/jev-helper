@@ -106,7 +106,7 @@ test('an English objective matches too; the target is remembered in the fog and 
 test('protect / capture objectives never become attack orders; an unseen objective keeps scouting going', () => {
   assert.deepEqual(objectiveKeywords('保护五角大楼'), []);
   assert.deepEqual(objectiveKeywords('capture the Pentagon'), []);
-  assert.deepEqual(objectiveKeywords('摧毁五角大楼'), ['pentagon']);
+  assert.deepEqual(objectiveKeywords('摧毁五角大楼'), ['pentagon', 'wash pent']);
   const guard = world({ own:[...home(), ...squad(12)], enemies:enemyBase() });
   guard.memory.objective = '保护五角大楼';
   assert.equal(trackObjective(guard.api, catalog, guard.memory), undefined);
@@ -115,9 +115,9 @@ test('protect / capture objectives never become attack orders; an unseen objecti
   search.memory.objective = '摧毁五角大楼';
   const snap = collectState(search.api, catalog), groups = candidateGroups(search.api, catalog, snap, search.memory);
   assert.equal(snap.state.forceReadiness.ready, true);
-  assert.equal(snap.state.objectiveTarget.found, false); assert.deepEqual(snap.state.objectiveTarget.keywords, ['pentagon']);
+  assert.equal(snap.state.objectiveTarget.found, false); assert.deepEqual(snap.state.objectiveTarget.keywords, ['pentagon', 'wash pent']);
   assert.ok(Array.isArray(snap.state.objectiveTarget.seen), 'visible building names are listed for diagnosis');
-  assert.match(groups.scouting.instructions, /^SEARCHING FOR THE OBJECTIVE \(pentagon\)/);
+  assert.match(groups.scouting.instructions, /^SEARCHING FOR THE OBJECTIVE \(pentagon \/ wash pent\)/);
   assert.ok(choices(groups.scouting).length && choices(groups.scouting).every(k => /^Find the objective: /.test(groups.scouting.criteria[k])));
 });
 
@@ -336,9 +336,9 @@ test('abandoning a failed attack also clears its lock; pillboxes guarding the ob
 });
 
 test('objective parsing: clauses, protected names, whole words, capture', () => {
-  assert.deepEqual(parseObjective('摧毁五角大楼，保护白宫').words, ['pentagon']);
+  assert.deepEqual(parseObjective('摧毁五角大楼，保护白宫').words, ['pentagon', 'wash pent']);
   assert.deepEqual(parseObjective('destroy the Pentagon and protect the White House').guarded, ['white house']);
-  assert.deepEqual(parseObjective('摧毁五角大楼和白宫').words, ['pentagon', 'white house'], 'a clause without a verb inherits it');
+  assert.deepEqual(parseObjective('摧毁五角大楼和白宫').words, ['pentagon', 'wash pent', 'white house'], 'a clause without a verb inherits it');
   assert.equal(matchesObjective('摧毁五角大楼，保护白宫', ['pentagon'], { label:'White House' }, 'CAWHITE'), false);
   assert.equal(matchesObjective('destroy the Pentagon', ['pentagon'], { label:'Pent' }, 'X'), false, 'no partial words');
   assert.equal(matchesObjective('destroy everything', [], { label:'Thing' }, 'X'), false);
@@ -408,11 +408,11 @@ test('threat replies: bounded work in a big battle, one report per pass, no walk
 test('objective clauses: "并 / 同时 / 但 / 不要 / but do not" protect what follows; "和" still lists two targets', () => {
   for (const text of ['摧毁五角大楼并保护白宫', '摧毁五角大楼同时保护白宫', '摧毁五角大楼但不要打白宫', '摧毁五角大楼但是别碰白宫', 'destroy the Pentagon but do not attack the White House']) {
     const parsed = parseObjective(text);
-    assert.deepEqual(parsed.words, ['pentagon'], text); assert.deepEqual(parsed.guarded, ['white house'], text);
+    assert.deepEqual(parsed.words, ['pentagon', 'wash pent'], text); assert.deepEqual(parsed.guarded, ['white house'], text);
     assert.equal(matchesObjective(text, parsed.words, { label:'White House' }, 'CAWHITE'), false, text);
   }
-  assert.deepEqual(parseObjective('摧毁五角大楼和白宫').words, ['pentagon', 'white house']);
-  assert.deepEqual(parseObjective('destroy the Pentagon and the White House').words, ['pentagon', 'white house']);
+  assert.deepEqual(parseObjective('摧毁五角大楼和白宫').words, ['pentagon', 'wash pent', 'white house']);
+  assert.deepEqual(parseObjective('destroy the Pentagon and the White House').words, ['pentagon', 'wash pent', 'white house']);
   // Near the base, the White House would otherwise be picked first.
   catalog.WHITE ??= { label:'White House', armor:'concrete' };
   const w = world({ own:[...home(), ...squad(12)], enemies:enemyBase(), neutral:[unit(996,'WHITE',2,20,20)] });
@@ -452,4 +452,36 @@ test('an unmatched objective records the names of the buildings in view, and the
   assert.equal(snapshot.state.objectiveTarget.found, false);
   assert.ok(snapshot.state.objectiveTarget.seen.includes('Allied Barracks/EBARR'));
   assert.deepEqual(stateSummary(snapshot.state).objective, { found:false, seen:['Allied Barracks/EBARR'] });
+});
+
+// 0.7.0 report (Laya, "摧毁五角大厦"): on the Washington map the Pentagon is four buildings labelled
+// "RA2 Wash Pent A" to "D" (CAWA2A-D). None matched "pentagon", the objective was never found, and
+// only the two pieces hit in passing fell.
+test('the Pentagon built from four "Wash Pent" pieces is found, and every piece is taken down in turn', () => {
+  const pieces = { CAWA2A:'RA2 Wash Pent A', CAWA2B:'RA2 Wash Pent B', CAWA2C:'RA2 Wash Pent C', CAWA2D:'RA2 Wash Pent D' };
+  for (const [name, label] of Object.entries(pieces)) catalog[name] = { label, armor:'concrete' };
+  catalog.CAWASH07 = { label:'RA2 Wash Building 7', armor:'wood' };
+  for (const text of ['摧毁五角大厦', '摧毁五角大楼', 'Destroy the Pentagon']) {
+    const words = objectiveKeywords(text);
+    for (const [name, label] of Object.entries(pieces)) assert.equal(matchesObjective(text, words, { label }, name), 'name', `${text} -> ${label}`);
+    assert.equal(matchesObjective(text, words, catalog.CAWASH07, 'CAWASH07'), false, 'an ordinary Washington building is not the target');
+  }
+  assert.equal(matchesObjective('摧毁五角大楼，保护白宫', objectiveKeywords('摧毁五角大楼，保护白宫'), { label:'RA2 Wash Pent A' }, 'CAWA2A'), 'name');
+  const neutral = [unit(1701,'CAWA2A',2,60,40), unit(1702,'CAWA2B',2,63,40), unit(1703,'CAWA2C',2,60,43), unit(1704,'CAWA2D',2,63,43), unit(1705,'CAWASH07',2,30,30)];
+  const w = world({ own:[...home(), ...squad(12)], neutral });
+  w.memory.objective = '摧毁五角大厦';
+  const destroyed = [];
+  for (let round = 0; round < 4; round++) {
+    const groups = candidateGroups(w.api, catalog, collectState(w.api, catalog), w.memory);
+    const key = choices(groups.tactics).find(k => k.startsWith('objective_'));
+    assert.ok(key, `round ${round}: the objective is offered`);
+    const id = Number(key.slice('objective_'.length));
+    assert.ok([1701, 1702, 1703, 1704].includes(id) && !destroyed.includes(id), `round ${round}: a remaining piece (${id})`);
+    destroyed.push(id);
+    neutral.splice(neutral.findIndex(u => u.id === id), 1);
+  }
+  const after = collectState(w.api, catalog);
+  candidateGroups(w.api, catalog, after, w.memory);
+  assert.equal(w.memory.objectiveTarget.done, true, 'all four pieces gone: the objective is complete');
+  assert.deepEqual([...w.memory.objectiveDone].sort(), [1701, 1702, 1703, 1704]);
 });

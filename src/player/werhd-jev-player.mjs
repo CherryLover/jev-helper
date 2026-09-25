@@ -1,5 +1,5 @@
 import { specialGroups, executeSpecial, rememberSpecial, maintainSpecial, refreshInfrastructure, SIEGE_RANGE } from "./werhd-jev-special.mjs";
-import { buildBrief, formSquads, squadUnits } from "./werhd-jev-commander.mjs";
+import { buildBrief, formSquads, squadUnits, sameIntent } from "./werhd-jev-commander.mjs";
 import { assessStrategy, investmentGroups, chooseBuildingSite, chooseRallySite, weaponEffectiveness, effectiveness, infantryProfile, scoutScore, currentWeapon as combatWeapon, activeWeapons, canFireAt, baseThreats, ATTACK_FORCE_SIZE, ATTACK_AA_ESCORTS, vehicleOptions } from "./werhd-jev-strategy.mjs";
 import { updateCamera } from "./werhd-jev-camera.mjs";
 import { refreshCatalog, isDecoration } from "./werhd-jev-catalog.mjs";
@@ -1398,11 +1398,16 @@ export const COMMAND_INTERVAL_TICKS = 180, AUTO_DEFENSE_TICKS = 450, INTENT_REFR
 // ATTACK_GRACE_TICKS: a raider stepping in and out of the base area is one attack, not many.
 // STALE_COMMAND_TICKS: a reply to a situation older than this moves no squads (production still runs).
 // HOLD_DRIFT: a holding unit pulled further than this from its point walks back once idle.
-export const URGENT_MIN_TICKS = 90, ATTACK_GRACE_TICKS = 300, STALE_COMMAND_TICKS = 900, HOLD_DRIFT = 4, PLAN_REPORT_CHARS = 8000;
+// AUTO_LOCK_TICKS: the automatic defense keeps its squad from the model at most this long.
+// A reply counts as stale only when it is both STALE_COMMAND_TICKS and STALE_COMMAND_MS old: a sped-up
+// game runs many ticks per second, and a normal 40 s reply must not be discarded there.
+export const URGENT_MIN_TICKS = 90, ATTACK_GRACE_TICKS = 300, STALE_COMMAND_TICKS = 900, STALE_COMMAND_MS = 60000, AUTO_LOCK_TICKS = 600, HOLD_DRIFT = 4, PLAN_REPORT_CHARS = 8000;
+// Units threatening the base. An enemy defense building standing near it is not an attack that ends:
+// it is listed among the enemy buildings for the model, and defenders only step out of its reach.
+const baseRaiders = (api, catalog, buildings, enemies) => baseThreats(api, catalog, buildings, enemies).filter((e) => e.type !== api.ObjectType.Building);
 const cut = (v, n = 40) => (typeof v === "string" ? v.slice(0, n) : v);
 const centerOf = (members) => ({ rx: members.reduce((n, u) => n + u.tile.rx, 0) / members.length, ry: members.reduce((n, u) => n + u.tile.ry, 0) / members.length });
 const newIntent = (o, tick, extra = {}) => ({ action: o.action, target: o.target, x: o.x, y: o.y, reason: o.reason ?? "", since: tick, members: new Set(), arrived: new Set(), ...extra });
-const sameIntent = (a, o) => !!a && a.action === o.action && a.target === o.target && (o.x === undefined || a.x !== undefined && Math.hypot(a.x - o.x, a.y - o.y) < 5);
 const ledgerTotals = (memory) => { const l = memory.ledger; return { lost: (l?.ownUnitsLost ?? 0) + (l?.ownBuildingsLost ?? 0), killed: (l?.enemyUnitsDestroyed ?? 0) + (l?.enemyBuildingsDestroyed ?? 0) }; };
 const visibleTarget = (api, id) => { let all = []; try { all = [...api.units("enemy"), ...(api.units("hostile") ?? [])]; } catch { all = api.units("enemy"); } return all.find((u) => u.id === id); };
 
@@ -1493,14 +1498,18 @@ export function orderSquad(api, catalog, memory, squad, intent, first = false) {
     }
     case "defend_base": {
       const own = api.units("self"), buildings = own.filter((u) => u.type === api.ObjectType.Building);
-      const threats = baseThreats(api, catalog, buildings, api.units("enemy"));
+      const threats = baseRaiders(api, catalog, buildings, api.units("enemy"));
       if (threats.length) {
-        const list = fresh;
-        if (!list.length) return done(true, "", { units: 0 });
-        const execution = executeCandidate(api, { type: "mission", mode: "defend", ids: ids(list), targetId: threats[0].id }, catalog);
-        for (const id of execution.undeployIds ?? []) memory.postureOrders?.set(id, tick);
-        mark(list.filter((u) => execution.ids?.includes(u.id)), { defense: true });
-        return done(!!execution.accepted, execution.accepted ? "" : execution.reason, { units: execution.ids?.length ?? 0 });
+        // Each defender takes a raider it can hurt, one in range first, else the closest.
+        const sent = [];
+        for (const u of fresh) {
+          const able = threats.filter((e) => effectiveness(catalog[u.name], [e], catalog, api) > 0).sort((a, b) => distance(a.tile, u.tile) - distance(b.tile, u.tile));
+          const target = able.find((e) => canFireAt(api, catalog, u, e)) ?? able[0];
+          if (!target) continue;
+          api.attack([u.id], target.id); sent.push(u);
+        }
+        mark(sent, { defense: true });
+        return done(sent.length > 0 || !fresh.length, sent.length || !fresh.length ? "" : "no_compatible_defender", { units: sent.length });
       }
       const site = stableRallySite(api, catalog, own, buildings.find((u) => catalog[u.name]?.yard) ?? buildings[0], memory);
       const list = site ? fresh.filter((u) => far(u, site.x, site.y, 5)) : [];
@@ -1599,8 +1608,9 @@ function instinctSets(memory, squads) {
   for (const q of squads) {
     const intent = memory.intents.get(q.id);
     if (!intent) continue;
-    if (intent.action === "garrison") for (const u of q.members) noRush.add(u.id);
-    if (["retreat", "defend_base"].includes(intent.action)) for (const u of q.members) skip.add(u.id);
+    // Defenders and the part of a garrison squad left outside never rush a fixed defense; they step back.
+    if (["garrison", "defend_base"].includes(intent.action)) for (const u of q.members) noRush.add(u.id);
+    if (intent.action === "retreat") for (const u of q.members) skip.add(u.id);
     if (["retreat", "move"].includes(intent.action) || intent.action === "scout")
       for (const u of q.members) if ((intent.action !== "scout" || u.id === intent.scoutId) && (intent.x === undefined || Math.hypot(u.tile.rx - intent.x, u.tile.ry - intent.y) > ARRIVED)) focus.add(u.id);
   }
@@ -1621,12 +1631,18 @@ export function maintainCommand(api, catalog, memory, emit, force = false) {
   const urgent = (why) => { cmd.urgent ??= why; };
   // An attack lasts from the first threat until none has been seen for ATTACK_GRACE_TICKS, so the
   // automatic defense counts time since the attack began, not only an unbroken stretch.
-  const threatened = baseThreats(api, catalog, buildings, enemies).length > 0;
+  const threatened = baseRaiders(api, catalog, buildings, enemies).length > 0;
   if (threatened) cmd.lastThreatTick = tick;
   const attacked = threatened || cmd.attackSince !== undefined && tick - (cmd.lastThreatTick ?? -Infinity) < ATTACK_GRACE_TICKS;
   if (attacked && !cmd.baseAttacked) { urgent("base_attacked"); cmd.attackSince = tick; cmd.autoDefended = false; }
   if (!attacked) { cmd.attackSince = undefined; for (const i of intents.values()) if (i.auto) i.locked = false; }
   cmd.baseAttacked = attacked;
+  // The lock has a hard limit: after it the model decides again, and the report says so.
+  for (const [sid, i] of intents) if (i.auto && i.locked && tick >= i.lockedUntil) {
+    i.locked = false;
+    ((memory.lastPlanReport ??= { tick, orders: [] }).auto ??= []).push({ kind: "squad", squad: sid, action: "defend_base", auto: true, accepted: true, tick,
+      result: `自动回防锁定到期（${AUTO_LOCK_TICKS} 拍），${sid} 交还模型指挥 (automatic defense lock expired: orders for ${sid} apply again)` });
+  }
   if (memory.enemyBuildings?.size && !cmd.sawEnemyBase) { cmd.sawEnemyBase = true; urgent("enemy_base_found"); }
   if (memory.objectiveTarget && !memory.objectiveTarget.done && !cmd.sawObjective) { cmd.sawObjective = true; urgent("objective_found"); }
   // More than half of a squad's members at the last turn are dead. Infantry inside a house or a
@@ -1641,7 +1657,7 @@ export function maintainCommand(api, catalog, memory, emit, force = false) {
     const q = [...squads].sort((a, b) => distance(centerOf(a.members), base.tile) - distance(centerOf(b.members), base.tile))[0];
     // Locked for as long as the attack lasts: an order for this squad from a turn that ignores the
     // attack is not carried out until the base is clear (see applyOrders).
-    intents.set(q.id, newIntent({ action: "defend_base", reason: "automatic: base under attack with no defend_base order" }, tick, { auto: true, locked: true }));
+    intents.set(q.id, newIntent({ action: "defend_base", reason: "automatic: base under attack with no defend_base order" }, tick, { auto: true, locked: true, lockedUntil: tick + AUTO_LOCK_TICKS }));
     cmd.autoDefended = true;
     const note = { kind: "squad", squad: q.id, action: "defend_base", auto: true, accepted: true, tick, result: `自动回防：基地受攻击 ${tick - cmd.attackSince} 拍，模型未安排回防 (automatic defend_base)` };
     ((memory.lastPlanReport ??= { tick, orders: [] }).auto ??= []).push(note);
@@ -1679,17 +1695,19 @@ export function refreshPlanReport(api, memory) {
   }
   if (r.ledger) r.sinceThen = { lost: now.lost - r.ledger.lost, killed: now.killed - r.ledger.killed };
   const holding = [...(memory.intents ?? [])].filter(([, i]) => i.auto && i.locked).map(([sid]) => sid);
-  if (holding.length) r.autoDefense = `${holding.join(", ")}: 基地仍受攻击，自动回防中 (base still under attack, automatic defense in progress; other orders for these squads wait until the base is clear)`;
+  const until = Math.max(...holding.map((sid) => memory.intents.get(sid).lockedUntil ?? 0));
+  if (holding.length) r.autoDefense = `${holding.join(", ")}: 基地仍受攻击，自动回防中 (base still under attack, automatic defense in progress. To command these squads, give them defend_base now, or wait until the lock ends at tick ${until} or the base is clear; other orders for them are refused until then)`;
   else delete r.autoDefense;
   return r;
 }
 
 // The model's orders, carried out: squad intents, production, engineers. Returns one result per order.
-export function applyOrders(api, catalog, memory, emit, reply, sourceTick) {
+// elapsedMs: real time since the brief was taken; without it only the tick count decides staleness.
+export function applyOrders(api, catalog, memory, emit, reply, sourceTick, { elapsedMs } = {}) {
   const tick = api.tick(), orders = reply?.orders ?? {}, intents = memory.intents ??= new Map(), cmd = memory.command ??= {};
   rememberEnemyBuildings(api, catalog, memory, api.units("enemy"));
   const squads = refreshSquads(api, catalog, memory), byId = new Map(squads.map((q) => [q.id, q]));
-  const results = [], stale = Number.isFinite(sourceTick) && tick - sourceTick > STALE_COMMAND_TICKS;
+  const results = [], stale = Number.isFinite(sourceTick) && tick - sourceTick > STALE_COMMAND_TICKS && !(elapsedMs <= STALE_COMMAND_MS);
   // units: the squad's size at the order; ordered: how many were actually sent this time.
   const line = (o, r) => { const { reason, units, ...rest } = r; results.push({ ...o, ...rest, ...(units !== undefined ? { ordered: units } : {}), accepted: !!r.accepted, ...(reason ? { reason } : {}) }); };
   for (const o of orders.squads ?? []) {
@@ -1699,10 +1717,11 @@ export function applyOrders(api, catalog, memory, emit, reply, sourceTick) {
     // Squads may have moved a long way since that brief: their orders wait for a fresh turn.
     if (stale) { line({ ...base, units: q.members.length }, { accepted: false, reason: "stale_reply" }); continue; }
     const old = intents.get(q.id);
-    if (old?.auto && old.locked && o.action !== "defend_base") { line({ ...base, units: q.members.length }, { accepted: false, reason: "auto_defense_active" }); continue; }
+    if (old?.auto && old.locked && tick < (old.lockedUntil ?? Infinity) && o.action !== "defend_base") { line({ ...base, units: q.members.length }, { accepted: false, reason: "auto_defense_active" }); continue; }
     // The same intent again keeps its members and clock: only new or idle members are ordered.
     const keep = sameIntent(old, o) && !old.targetGone;
-    const intent = keep ? Object.assign(old, { reason: o.reason ?? old.reason, auto: false, locked: false }) : newIntent(o, tick);
+    // A repeat within 5 tiles continues the intent at the new point, so the squad key follows it.
+    const intent = keep ? Object.assign(old, { reason: o.reason ?? old.reason, auto: false, locked: false, ...(o.x !== undefined ? { x: o.x, y: o.y } : {}) }) : newIntent(o, tick);
     intents.set(q.id, intent);
     const r = guarded(api, memory, emit, q.id, () => orderSquad(api, catalog, memory, q, intent, !keep));
     line({ ...base, units: q.members.length }, keep ? { ...r, continues: true } : r);
@@ -1722,7 +1741,7 @@ export function applyOrders(api, catalog, memory, emit, reply, sourceTick) {
   // past the size limit, the request would be refused and the report never replaced.
   const rejected = (reply?.rejected ?? []).slice(0, 10).map((r) => Object.fromEntries(Object.entries(r ?? {}).slice(0, 8).map(([k, v]) => [cut(k, 20), typeof v === "number" ? v : cut(String(v))])));
   const report = { tick, sourceTick, note: String(orders.note ?? "").slice(0, 400), orders: results.slice(0, 20).map(brief), rejected,
-    ...(stale ? { stale: `回答过期（局面已过去 ${tick - sourceTick} 拍），小队意图未执行 (reply too old: squad orders not executed)` } : {}),
+    ...(stale ? { stale: `回答过期（局面已过去 ${tick - sourceTick} 拍${Number.isFinite(elapsedMs) ? `、${Math.round(elapsedMs / 1000)} 秒` : ""}），小队意图未执行 (reply too old: squad orders not executed)` } : {}),
     ...(unseen.length ? { auto: unseen.slice(0, 5) } : {}), ledger: ledgerTotals(memory) };
   if (JSON.stringify(report).length > PLAN_REPORT_CHARS) { report.rejected = report.rejected.map(({ kind, reason }) => ({ kind, reason })); report.orders = report.orders.slice(0, 10); }
   if (JSON.stringify(report).length > PLAN_REPORT_CHARS) { report.note = report.note.slice(0, 100); report.rejected = [{ reason: `${rejected.length} orders refused` }]; }
@@ -2045,7 +2064,6 @@ export async function attachJevPlayer(api, options = {}) {
       cmd.lastTick = tick; cmd.urgent = undefined;
       // Seen before this turn: only something new brings the next turn forward.
       cmd.sawEnemyBase ||= memory.enemyBuildings.size > 0; cmd.sawObjective ||= !!(memory.objectiveTarget && !memory.objectiveTarget.done);
-      if (snap.state.baseUnderAttack && !cmd.baseAttacked) { cmd.baseAttacked = true; cmd.attackSince ??= tick; cmd.lastThreatTick = tick; }
       cmd.squadsAtTurn = new Map(memory.squads ?? []); cmd.lossReported = new Set();
       status.busy = true;
       const started = performance.now();
@@ -2055,7 +2073,7 @@ export async function attachJevPlayer(api, options = {}) {
       if (!status.running) return;
       // Carrying the reply out is not a failed request: an error here is reported, not counted toward stopping.
       let results = [];
-      try { results = applyOrders(api, catalog, memory, emit, result, tick); }
+      try { results = applyOrders(api, catalog, memory, emit, result, tick, { elapsedMs: performance.now() - started }); }
       catch (e) { if (/outside a running battle/.test(e.message)) throw e; emit({ kind: "error", tick: api.tick(), message: `指挥命令执行出错：${String(e?.message ?? e).slice(0, 200)}` }); }
       status.accepted += results.filter((r) => r.accepted).length;
       status.rejected += results.filter((r) => !r.accepted).length + (result.rejected?.length ?? 0);

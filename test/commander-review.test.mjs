@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { attachJevPlayer, applyOrders, maintainCommand, maintainBattle, refreshSquads, refreshPlanReport,
-  AUTO_DEFENSE_TICKS, URGENT_MIN_TICKS, STALE_COMMAND_TICKS, ATTACK_GRACE_TICKS, PLAN_REPORT_CHARS } from '../src/player/werhd-jev-player.mjs';
+  AUTO_DEFENSE_TICKS, URGENT_MIN_TICKS, STALE_COMMAND_TICKS, STALE_COMMAND_MS, ATTACK_GRACE_TICKS, AUTO_LOCK_TICKS, PLAN_REPORT_CHARS } from '../src/player/werhd-jev-player.mjs';
 import { buildCommanderRequest, parseCommanderResponse, COMMAND_TOOL } from '../src/openai.mjs';
 import { catalog, T, u, infantry, world, home, road, civilians, brief, scene } from './commander-world.mjs';
 
@@ -185,4 +185,86 @@ test('P2-5: enemy groups name up to three unit ids the model can attack, and the
   const r = parseCommanderResponse(call({ note: '', squads: [{ squad: 'S1', action: 'attack', target: group.ids[0] }] }), b.legal);
   assert.equal(r.orders.squads.length, 1);
   assert.match(buildCommanderRequest({ model: 'm', brief: b }).messages[0].content, /each enemy group lists up to three unit ids; to fight a whole group, attack_move to its position/);
+});
+
+// ---- Second review (5f984bb): d1, d3b / d3c, d5b ----
+test('P1-A: an enemy pillbox near the base is not an endless attack; the automatic defense lock ends after 600 ticks (d1)', () => {
+  // Case A: only a pillbox 14 tiles from our buildings. It is an enemy building for the model, not a raid.
+  const a = world({ own: [...home(), ...infantry(10, 8, 100, 100), ...infantry(40, 10, 60, 52)], enemies: [...road(), u(5000, 'GAPILL', T.Building, 96, 108)], neutral: civilians() });
+  maintainCommand(a.api, catalog, a.memory, () => {}, true);
+  const HA = squadOf(a, 10), autosA = [];
+  for (let t = 12015; t <= 14000; t += 15) {
+    a.setTick(t); maintainCommand(a.api, catalog, a.memory, (e) => { if (e.kind === 'command') autosA.push(t); });
+    if (t % 180 === 0) assert.equal(applyOrders(a.api, catalog, a.memory, () => {}, { orders: { squads: [{ squad: HA, action: 'attack_move', x: 70, y: 60 }] } }, t)[0].accepted, true);
+  }
+  assert.equal(a.memory.command.baseAttacked, false); assert.deepEqual(autosA, [], 'no automatic defense against a building');
+  assert.ok(brief(a).enemyBuildings.some((b) => b.id === 5000), 'the model sees it as an enemy building');
+  // Case B: a tank parked next to the base for the whole game.
+  const b = world({ own: [...home(), ...infantry(10, 8, 100, 100), ...infantry(40, 10, 60, 52)], enemies: [...road(), u(5001, 'HTNK', T.Vehicle, 103, 110), u(5002, 'GAPILL', T.Building, 96, 108)], neutral: civilians() });
+  maintainCommand(b.api, catalog, b.memory, () => {}, true);
+  const HB = squadOf(b, 10), results = [];
+  let autoAt;
+  for (let t = 12015; t <= 18000; t += 15) {
+    b.setTick(t); b.calls.length = 0;
+    maintainCommand(b.api, catalog, b.memory, (e) => { if (e.kind === 'command') autoAt ??= t; });
+    for (const c of b.calls) if (c[0] === 'attack') assert.notEqual(c[2], 5002, 'defenders are never sent at the pillbox');
+    if (t % 180 === 0) results.push([t, applyOrders(b.api, catalog, b.memory, () => {}, { orders: { squads: [{ squad: HB, action: 'attack_move', x: 70, y: 60 }] } }, t)[0]]);
+    if (autoAt && t === autoAt + 45) assert.match(refreshPlanReport(b.api, b.memory).autoDefense, /defend_base now, or wait until the lock ends at tick \d+/);
+  }
+  assert.ok(autoAt >= 12000 + AUTO_DEFENSE_TICKS);
+  const refused = results.filter(([, r]) => r.reason === 'auto_defense_active').map(([t]) => t);
+  assert.ok(refused.length > 0 && refused.every((t) => t < autoAt + AUTO_LOCK_TICKS), `refused only while locked: ${refused}`);
+  assert.ok(results.some(([t, r]) => t >= autoAt + AUTO_LOCK_TICKS && r.accepted), 'after the lock the model commands again');
+  // The report of the turn when the lock ran out says so (it is kept until the next reply replaces it).
+  const c = world({ own: [...home(), ...infantry(10, 8, 100, 100)], enemies: [u(5001, 'HTNK', T.Vehicle, 103, 110)], neutral: civilians() });
+  maintainCommand(c.api, catalog, c.memory, () => {}, true);
+  applyOrders(c.api, catalog, c.memory, () => {}, { orders: { squads: [] } }, 12000);
+  c.setTick(12000 + AUTO_DEFENSE_TICKS); maintainCommand(c.api, catalog, c.memory, () => {}, true);
+  c.setTick(12000 + AUTO_DEFENSE_TICKS + AUTO_LOCK_TICKS); maintainCommand(c.api, catalog, c.memory, () => {}, true);
+  assert.match(c.memory.lastPlanReport.auto.at(-1).result, /锁定到期.*交还模型/);
+  assert.equal(refreshPlanReport(c.api, c.memory).autoDefense, undefined);
+});
+
+test('P1-B: a second attack first seen during a command turn still gets its automatic defense (d3c)', async () => {
+  const enemies = road(), raider = u(5000, 'HTNK', T.Vehicle, 103, 110);
+  const x = world({ own: [...home(), ...infantry(10, 8, 100, 100), ...infantry(40, 10, 60, 52)], enemies, neutral: civilians() });
+  const autos = [];
+  // The model never defends: it keeps every squad on hold where it stands.
+  const p = await attachJevPlayer(x.api, { catalog, commander: true, intervalMs: 1, wakeIntervalMs: 0, microIntervalMs: 0, maxDecisions: 500, autoCamera: false,
+    onEvent: (e) => { if (e.kind === 'command' && e.auto?.length) autos.push(e.tick); },
+    requestDecision: async (body) => ({ orders: { note: '', squads: body.brief.squads.map((q) => ({ squad: q.id, action: 'hold', x: q.at[0], y: q.at[1] })) }, rejected: [], latencyMs: 1 }) });
+  try {
+    await sleep(5);
+    let t = 12000;
+    const run = async (n, on) => { for (let k = 0; k < n; k++) { t += 45; x.setTick(t); const i = enemies.indexOf(raider); if (on && i < 0) enemies.push(raider); if (!on && i >= 0) enemies.splice(i, 1); x.api._tick({}); await sleep(2); } };
+    await run(12, true);
+    await run(10, false);
+    await run(14, true);
+    assert.equal(autos.length, 2, `one automatic defense per attack: ${autos}`);
+  } finally { p.stop('manual'); }
+});
+
+test('P2-A: repeats of the same order a few tiles apart keep one squad, and the point follows the latest order (d5b)', () => {
+  const x = world({ own: [...home(), ...infantry(10, 10, 60, 52)], enemies: [], neutral: civilians() });
+  let t = 12000, nid = 100;
+  for (let turn = 0; turn < 20; turn++) {
+    x.self.push(...infantry(nid, 3, 104, 116)); nid += 3;
+    const sq = refreshSquads(x.api, catalog, x.memory);
+    applyOrders(x.api, catalog, x.memory, () => {}, { orders: { squads: sq.map((q) => ({ squad: q.id, action: 'attack_move', x: 60 + (turn % 5), y: 48 + (turn % 4) })) } }, t);
+    for (const q of refreshSquads(x.api, catalog, x.memory)) { const i = x.memory.intents.get(q.id); if (i?.x !== undefined) for (const m of q.members) { m.tile = { rx: i.x + (m.id % 5) * 0.5, ry: i.y + ((m.id >> 2) % 3) * 0.5 }; m.isIdle = true; } }
+    for (let k = 0; k < 4; k++) { t += 45; x.setTick(t); maintainCommand(x.api, catalog, x.memory, () => {}, true); }
+  }
+  const b = brief(x, '');
+  assert.ok(b.squads.length <= 2, `${b.squads.length} squads at the same front`);
+  const i = x.memory.intents.get('S1');
+  assert.deepEqual([i.x, i.y], [60 + (19 % 5), 48 + (19 % 4)], 'the point is the one last ordered');
+});
+
+test('P2-B: staleness needs both many ticks and a long real wait, so a sped-up game keeps its replies', () => {
+  const order = { orders: { squads: [{ squad: 'S1', action: 'move', x: 90, y: 90 }] } };
+  const fast = scene(); brief(fast); fast.setTick(12000 + STALE_COMMAND_TICKS * 3);
+  assert.equal(applyOrders(fast.api, catalog, fast.memory, () => {}, order, 12000, { elapsedMs: 40000 })[0].accepted, true, 'a 40 s reply in a fast game still moves the squad');
+  const slow = scene(); brief(slow); slow.setTick(12000 + STALE_COMMAND_TICKS + 1);
+  const [r] = applyOrders(slow.api, catalog, slow.memory, () => {}, order, 12000, { elapsedMs: STALE_COMMAND_MS + 1 });
+  assert.equal(r.reason, 'stale_reply'); assert.match(slow.memory.lastPlanReport.stale, /拍、60 秒/);
 });

@@ -41,11 +41,21 @@ export const squadUnits = (units, catalog, api) => units.filter((u) => u.type !=
 // intents never merge, even when they pass close by (a column walking through the home guard kept
 // the guard's intent and was pulled back); units without an intent (new recruits) join the nearest
 // squad within reach.
-export const intentKey = (i) => `${i.action}|${i.target ?? ''}|${i.x ?? ''},${i.y ?? ''}`;
+// "The same intent" is one rule everywhere: same action and target, points within 5 tiles. The executor
+// treats such a repeat as a continuation, so squads under it must be allowed to merge too.
+export const sameIntent = (a, o) => !!a && !!o && a.action === o.action && a.target === o.target &&
+  (o.x === undefined || a.x !== undefined && Math.hypot(a.x - o.x, a.y - o.y) < 5);
 export function formSquads(units, memory, radius = SQUAD_RADIUS) {
   const previous = memory.squads ?? new Map(), prevOf = new Map();
   for (const [sid, ids] of previous) for (const id of ids) prevOf.set(id, sid);
-  const keyOf = (u) => { const i = memory.intents?.get(prevOf.get(u.id)); return i ? intentKey(i) : ''; };
+  const kinds = [];
+  const keyOf = (u) => {
+    const i = memory.intents?.get(prevOf.get(u.id));
+    if (!i) return '';
+    let k = kinds.findIndex((o) => sameIntent(o, i) && sameIntent(i, o));
+    if (k < 0) k = kinds.push(i) - 1;
+    return `k${k}`;
+  };
   const byKey = new Map();
   for (const u of units) { const k = keyOf(u); if (!byKey.has(k)) byKey.set(k, []); byKey.get(k).push(u); }
   const squads = [];

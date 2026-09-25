@@ -299,7 +299,9 @@ test('player: move, hold, scout, retreat and defend_base', () => {
   applyOrders(y.api, catalog, y.memory, () => {}, { orders: { squads: [{ squad: 'S2', action: 'defend_base' }, { squad: 'S1', action: 'retreat' }] } }, 12000);
   assert.deepEqual(y.calls.find((c) => c[0] === 'attack')[2], 900, 'defenders go for the raider');
   assert.ok(y.calls.some((c) => c[0] === 'move' && c[1].length === 18), 'the front squad walks home');
-  for (const id of [10, 40]) assert.ok(y.memory.instinctSkip.has(id), 'retreating and defending squads are not turned round by the reflexes');
+  assert.ok(y.memory.instinctSkip.has(10), 'a retreating squad is not turned round by the reflexes');
+  // Defenders keep their reflexes against raiders, but never rush a fixed defense: they only step back from it.
+  assert.ok(!y.memory.instinctSkip.has(40) && y.memory.noRush.has(40));
 });
 
 test('player: base under attack for 450 ticks with no defend_base order → the nearest squad defends it, and the report says so', () => {

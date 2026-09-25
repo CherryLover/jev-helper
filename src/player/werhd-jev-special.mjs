@@ -6,7 +6,8 @@ export const ENTRY_RESENDS = 3;
 export const RELEASE_RADIUS = 10, RELEASE_TICKS = { siege: 150, forward: 900, base: 2700 }, REENTER_COOLDOWN = 1800;
 // All tactical choices and spatial searches live in the ordinary player script.
 const distance = (a, b) => Math.hypot(a.rx - b.rx, a.ry - b.ry);
-const idle = (unit, memory, tick) => unit.isIdle && tick - (memory.specialOrders?.get(unit.id)?.tick ?? -10000) > 450;
+// A unit still on a special task (an engineer trailing the column for a capture) is never idle.
+const idle = (unit, memory, tick) => unit.isIdle && tick - (memory.specialOrders?.get(unit.id)?.tick ?? -10000) > 450 && !memory.specialTasks?.some((t) => t.action.ids?.includes(unit.id));
 const friendlyOnBridge = (api, tile) => [...api.units('self'), ...api.units('allied')]
   .some(u => u.onBridge && distance(u.tile, { rx: tile.x, ry: tile.y }) < 7);
 
@@ -215,8 +216,11 @@ export function specialGroups(api, catalog, snapshot, memory, groups) {
   for (const c of captureTargets) {
     const engineer = engineers.filter((u) => idle(u, memory, tick)).sort((a, b) => distance(a.tile, c.unit.tile) - distance(b.tile, c.unit.tile))[0];
     if (!engineer || tick - (memory.specialTargets?.get(`repair_${c.unit.id}`) ?? -10000) <= 600) continue;
-    engineering(`capture_${c.unit.id}`, `${c.objective ? 'MISSION OBJECTIVE CAPTURE' : c.neutral ? 'CAPTURE (neutral)' : 'CAPTURE (enemy, undefended)'}: send engineer #${engineer.id} into ${catalog[c.unit.name]?.label ?? c.unit.name} #${c.unit.id} at (${c.unit.tile.rx},${c.unit.tile.ry}), ${Math.round(distance(engineer.tile, c.unit.tile))} tiles away${c.defended ? '; armed enemies nearby, risky' : ''}. The engineer is consumed; the building becomes ours.`,
-      { type: 'special', kind: 'capture', ids: [engineer.id], targetId: c.unit.id, order: { type: api.OrderType.Capture, target: { objectId: c.unit.id } }, auto: c.objective ? (c.defended ? 3 : 1) : c.neutral && !c.defended ? 2 : c.defended ? undefined : 3 });
+    engineering(`capture_${c.unit.id}`, `${c.objective ? 'MISSION OBJECTIVE CAPTURE' : c.neutral ? 'CAPTURE (neutral)' : 'CAPTURE (enemy, undefended)'}: ${c.objective && c.defended ? `engineer #${engineer.id} follows behind our attacking column and enters when the column reaches` : `send engineer #${engineer.id} into`} ${catalog[c.unit.name]?.label ?? c.unit.name} #${c.unit.id} at (${c.unit.tile.rx},${c.unit.tile.ry}), ${Math.round(distance(engineer.tile, c.unit.tile))} tiles away${c.defended ? '; armed enemies nearby, risky' : ''}. The engineer is consumed; the building becomes ours.`,
+      { type: 'special', kind: 'capture', ids: [engineer.id], targetId: c.unit.id, order: { type: api.OrderType.Capture, target: { objectId: c.unit.id } },
+        // A defended objective: the engineer follows the army instead of walking in alone (0.7.3 sent
+        // about fifteen engineers 117 tiles through the defenses one by one; none arrived).
+        ...(c.objective && c.defended ? { escort: true } : {}), auto: c.objective ? 1 : c.neutral && !c.defended ? 2 : c.defended ? undefined : 3 });
   }
   // A defended capture objective can cost an engineer on the way in: keep two ready for it.
   const engineersWanted = Math.min(2, captureTargets.length) + (wanted && armedNear(wanted.tile) ? 1 : 0) + (huts.length && bridgeUrgent ? 1 : 0);
@@ -320,6 +324,8 @@ export function executeSpecial(api, action) {
   }
   if (action.targetId !== undefined && !api.unit(action.targetId)) return { accepted: false, reason: 'target_no_longer_visible' };
   if (action.kind === 'capture' && api.units('self').some((u) => u.id === action.targetId)) return { accepted: false, reason: 'already_owned' };
+  // Escorted capture: nothing is sent yet; maintenance walks the engineer behind the column.
+  if (action.kind === 'capture' && action.escort) return { accepted: true, ids: action.ids, escort: true };
   if (action.kind === 'garrison') {
     const target = api.unit(action.targetId);
     if (!target?.garrison?.canOccupy || target.garrison.count >= target.garrison.capacity)
@@ -349,7 +355,7 @@ export function rememberSpecial(memory, action, execution, tick) {
     for (const id of action.ids) memory.specialOrders.set(id, { tick, kind: action.kind });
   }
   if (action.ids?.length && action.kind === 'capture' && execution.accepted) {
-    memory.specialTasks.push({ action, started: tick, submitted: tick });
+    memory.specialTasks.push({ action, started: tick, submitted: tick, ...(action.escort ? { escort: true, moved: -10000 } : {}) });
     for (const id of action.ids) memory.specialOrders.set(id, { tick, kind: action.kind });
   }
   if (action.kind === 'garrison' && execution.accepted) {
@@ -364,7 +370,38 @@ export function rememberSpecial(memory, action, execution, tick) {
 }
 
 // A multi-step player task; the engine still receives only ordinary independent commands.
-export function maintainSpecial(api, memory, emit) {
+// Escorted capture: the engineer trails the column by this many tiles and goes in when the column's
+// centre is this close to the target, or when no armed enemy is left this close to it.
+export const ESCORT_TRAIL_TILES = 4, ESCORT_ARRIVE_TILES = 8, ESCORT_MOVE_TICKS = 60;
+function maintainEscort(api, memory, task, own, tick, emit, catalog, done) {
+  const { action } = task, engineer = own.get(action.ids[0]), target = api.unit(action.targetId);
+  if (own.has(action.targetId)) return done('completed');
+  if (!engineer) return done('engineer_lost');
+  if (!target) return done('target_lost');
+  memory.specialOrders.set(engineer.id, { tick, kind: 'capture' });
+  const armed = (api.units('enemy') ?? []).some((e) => e.id !== target.id && (e.primaryWeapon || catalog?.[e.name]?.weapon?.damage > 0) && distance(e.tile, target.tile) <= ESCORT_ARRIVE_TILES);
+  const column = (memory.mission?.ids ?? []).map((id) => own.get(id)).filter(Boolean);
+  const center = column.length ? { rx: column.reduce((n, u) => n + u.tile.rx, 0) / column.length, ry: column.reduce((n, u) => n + u.tile.ry, 0) / column.length } : undefined;
+  if (!armed || center && distance(center, target.tile) <= ESCORT_ARRIVE_TILES) {
+    const execution = executeSpecial(api, { ...action, escort: false });
+    if (!execution.accepted) return done('rejected');
+    Object.assign(task, { escort: false, started: tick, submitted: tick });
+    emit({ kind: 'micro', tick, description: `capture: ${armed ? '部队已到目标旁' : '目标附近已无守军'}，工程师 #${engineer.id} 进入 #${action.targetId}`, targetId: action.targetId, ids: [engineer.id] });
+    return true;
+  }
+  // Behind the column, on the side facing the engineer; without a column the engineer stays put.
+  if (center && tick - task.moved >= ESCORT_MOVE_TICKS) {
+    const d = distance(engineer.tile, center) || 1;
+    if (d > ESCORT_TRAIL_TILES + 2) {
+      const x = Math.round(center.rx + (engineer.tile.rx - center.rx) / d * ESCORT_TRAIL_TILES), y = Math.round(center.ry + (engineer.tile.ry - center.ry) / d * ESCORT_TRAIL_TILES);
+      api.move([engineer.id], x, y);
+    }
+    task.moved = tick;
+  }
+  return true;
+}
+
+export function maintainSpecial(api, memory, emit, catalog) {
   releaseGarrisons(api, memory, emit);
   if (!memory.specialTasks?.length) return;
   const own = new Map(api.units('self').map((u) => [u.id, u]));
@@ -375,6 +412,7 @@ export function maintainSpecial(api, memory, emit) {
     if (action.kind === 'capture') {
       const engineer = own.get(action.ids[0]), target = api.unit(action.targetId);
       const done = (result) => { for (const id of action.ids) memory.specialOrders.delete(id); emit({ kind: result === 'completed' ? 'observed' : 'task', tick, task: 'capture', description: `capture ${result}: #${action.targetId}`, result, targetId: action.targetId }); return false; };
+      if (task.escort) return maintainEscort(api, memory, task, own, tick, emit, catalog, done);
       if (own.has(action.targetId)) return done('completed');
       if (!engineer) return target ? done('engineer_lost') : done('incomplete');
       if (!target && tick - task.started > 600) return done('target_lost');

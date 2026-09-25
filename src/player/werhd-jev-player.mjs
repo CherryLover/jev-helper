@@ -128,6 +128,8 @@ function roleOf(rule) {
 export const RICH_INFANTRY_CREDITS = 3000, RICH_INFANTRY_CAP = 40, RICH_INFANTRY_SPEND = 5000;
 // Any army: above RICH_SPEND credits and below RICH_ARMY_CAP units, a declined combat unit is trained anyway.
 export const RICH_SPEND = 5000, RICH_ARMY_CAP = 40;
+// Capture objectives: the column pushes with this many units, to a point this far short of the target.
+export const CAPTURE_PUSH_UNITS = 6, CAPTURE_STAGE_TILES = 4;
 // Recent answers per decision group, with the loss / kill totals at the time, so a repeated choice
 // that produced nothing can be shown back to the model and demoted.
 export const RECENT_LIMIT = 8, STALE_REPEATS = 4, STALE_REMOVE = 6;
@@ -735,8 +737,21 @@ export function candidateGroups(api, catalog, snapshot, memory) {
     // The objective is offered whatever the force size: the player asked for it. It comes first,
     // except that a threatened base is defended first. It is automatic only when the force is ready
     // (or the stall rule applies): otherwise it would feed small groups in one after another.
-    // A capture target is taken by an engineer (special groups), never attacked.
-    const offerObjective = () => objectiveTarget && !captureMission && tactics(
+    // A capture target is taken by an engineer, never attacked: the army pushes to a point beside it
+    // and clears its defenders while the engineer follows (special groups). Capture missions can be
+    // on a clock (0.7.3: the Battle Lab fell at 32:30 both times), so the push does not wait for the
+    // full attack threshold, only for CAPTURE_PUSH_UNITS.
+    const pushReady = captureMission && (ready || ids.length >= CAPTURE_PUSH_UNITS);
+    const offerCapturePush = () => {
+      const c = { rx: active.reduce((n, u) => n + u.tile.rx, 0) / active.length, ry: active.reduce((n, u) => n + u.tile.ry, 0) / active.length };
+      const d = Math.hypot(c.rx - objectiveTarget.x, c.ry - objectiveTarget.y) || 1, back = Math.min(CAPTURE_STAGE_TILES, d);
+      const x = Math.round(objectiveTarget.x + (c.rx - objectiveTarget.x) / d * back), y = Math.round(objectiveTarget.y + (c.ry - objectiveTarget.y) / d * back);
+      tactics(`objective_${objectiveTarget.id}`,
+        `OBJECTIVE PUSH: attack-move ${ids.length} units to (${x},${y}) beside ${objectiveTarget.label} #${objectiveTarget.id}, clearing its defenders so the engineer following the column can capture it. The target itself is never attacked.`,
+        { type: "mission", mode: "attack", label: `掩护占领 ${objectiveTarget.label}`, ids, x, y, objective: true, capturePush: objectiveTarget.id,
+          ...(threatening.length || !pushReady ? {} : { auto: 2 }) });
+    };
+    const offerObjective = () => objectiveTarget && (captureMission ? offerCapturePush() : tactics(
       `objective_${objectiveTarget.id}`,
       `OBJECTIVE: destroy ${objectiveTarget.label} #${objectiveTarget.id} ${objectiveTarget.visible ? "at" : "last seen at"} ${where(objectiveTarget)} with ${ids.length} units.`,
       {
@@ -750,9 +765,10 @@ export function candidateGroups(api, catalog, snapshot, memory) {
         objective: true,
         ...(threatening.length || !ready ? {} : { auto: 2 }),
       },
-    );
+    ));
     if (!threatening.length) offerObjective();
-    if (!ready && !threatening.length && rallySite && memory.enemyBuildings.size)
+    // With a capture objective and enough units to push, gathering more only runs the clock down.
+    if (!ready && !pushReady && !threatening.length && rallySite && memory.enemyBuildings.size)
       tactics(
         "assemble_force",
         `Gather ${ids.length} troops near our base and accumulate ${readiness.threshold} combat units including 2 anti-air escorts if air threats exist. Do not feed reinforcements into the enemy base one at a time.`,
@@ -1231,7 +1247,7 @@ export function respondToThreats(api, catalog, memory, emit, mobile, enemies, sk
 }
 
 export function maintainBattle(api, catalog, memory, emit) {
-  maintainSpecial(api, memory, emit);
+  maintainSpecial(api, memory, emit, catalog);
   const tick = api.tick(),
     own = api.units("self"),
     enemies = api.units("enemy");
@@ -1324,6 +1340,9 @@ export function maintainBattle(api, catalog, memory, emit) {
   // Commander mode: squads told to retreat or defend the base are not turned round by the instinct layer.
   respondToThreats(api, catalog, memory, emit, mobile, enemies, new Set([...(defending || mission?.mode === 'retreat' ? mission.ids : []), ...(memory.instinctSkip ?? [])]));
   // Mechanics: focus on a reachable in-range enemy, without replacing the model's macro mission.
+  // Never on a building the objective says to capture or protect: a column parked beside the Battle
+  // Lab would otherwise shoot the very building its engineer is walking into.
+  const spared = new Set(enemies.filter((e) => e.type === api.ObjectType.Building && (e.id === memory.objectiveTarget?.id && memory.objectiveTarget?.mode === "capture" || isGuardedByObjective(memory.objective, catalog[e.name], e.name))).map((e) => e.id));
   let issued = 0;
   for (const u of [...mobile, ...naval]) {
     if (tick - (memory.postureOrders?.get(u.id) ?? -1000) < 20) continue;
@@ -1361,7 +1380,7 @@ export function maintainBattle(api, catalog, memory, emit) {
     const canHit = (e) => e.zone !== 1 || activeWeapons(u, catalog).some(w=>w.aa);
     const options = enemies.filter(
       (e) =>
-        canHit(e) && canFireAt(api, catalog, u, e),
+        canHit(e) && canFireAt(api, catalog, u, e) && !spared.has(e.id),
     );
     options.sort((a,b) => combatTargetScore(api,catalog,u,b,mission?.targetId) -
       combatTargetScore(api,catalog,u,a,mission?.targetId));
@@ -1372,7 +1391,7 @@ export function maintainBattle(api, catalog, memory, emit) {
       issued++;
     } else if (catalog[u.name]?.naval && u.isIdle && (!last || tick - last.tick > 90)) {
       // Idle ships close on nearby enemies they can hurt instead of waiting to be shot at.
-      const near = enemies.filter(e => canHit(e) && distance(e.tile, u.tile) <= 12 && effectiveness(catalog[u.name], [e], catalog, api) > 0)
+      const near = enemies.filter(e => canHit(e) && !spared.has(e.id) && distance(e.tile, u.tile) <= 12 && effectiveness(catalog[u.name], [e], catalog, api) > 0)
         .sort((a, b) => distance(a.tile, u.tile) - distance(b.tile, u.tile))[0];
       if (near) { api.attack([u.id], near.id); memory.orders.set(u.id, { targetId: near.id, tick }); issued++; }
     } else if (

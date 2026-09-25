@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { collectState, candidateGroups, RICH_SPEND } from '../src/player/werhd-jev-player.mjs';
+import { collectState, candidateGroups, executeCandidate, maintainBattle, RICH_SPEND, CAPTURE_PUSH_UNITS, CAPTURE_STAGE_TILES } from '../src/player/werhd-jev-player.mjs';
+import { rememberSpecial, maintainSpecial, ESCORT_ARRIVE_TILES } from '../src/player/werhd-jev-special.mjs';
 import { parseObjective, matchesCapture, isGuardedByObjective } from '../src/player/werhd-jev-objective.mjs';
 import { catalog, T, u, infantry, world, home, brief } from './commander-world.mjs';
 
@@ -37,7 +38,9 @@ test('the Battle Lab is the capture objective: never an assault, engineers go fo
   const { snap, groups } = groupsOf(x);
   assert.deepEqual({ id: snap.state.objectiveTarget.id, mode: snap.state.objectiveTarget.mode }, { id: 1470, mode: 'capture' });
   const tactics = Object.keys(groups.tactics.criteria);
-  assert.ok(!tactics.includes('assault_1470') && !tactics.includes('objective_1470'), 'the lab is never an attack option');
+  assert.ok(!tactics.includes('assault_1470'), 'the lab is never an assault option');
+  assert.equal(groups.tactics.actions.objective_1470?.targetId, undefined, 'the objective option pushes beside it, never at it');
+  assert.ok(Object.values(groups.tactics.actions).every((a) => a?.targetId !== 1470), 'no tactics option targets the lab');
   assert.ok(tactics.includes('assault_1467'), 'the pillbox guarding it is');
   assert.ok(tactics.indexOf('assault_1467') < tactics.indexOf('assault_1434'), 'and comes before the yard');
   assert.match(groups.tactics.instructions, /CAPTURE target: Allied Battle Lab #1470 .*never attack it/);
@@ -45,10 +48,12 @@ test('the Battle Lab is the capture objective: never an assault, engineers go fo
   assert.ok(capture, 'the engineer is offered the lab although a pillbox stands next to it');
   assert.equal(Object.keys(groups.engineering.criteria).filter((k) => k !== 'wait')[0], 'capture_1470', 'first');
   assert.match(groups.engineering.criteria.capture_1470, /^MISSION OBJECTIVE CAPTURE/);
-  assert.equal(capture.auto, 3, 'defended: automatic after three declines');
+  assert.equal(capture.escort, true, 'defended: the engineer follows the column instead of walking in alone');
+  assert.equal(capture.auto, 1);
   x.enemies.splice(x.enemies.findIndex((e) => e.id === 1467), 1);
   const calm = groupsOf(x).groups;
   assert.equal(calm.engineering.actions.capture_1470.auto, 1, 'undefended: automatic after one decline');
+  assert.equal(calm.engineering.actions.capture_1470.escort, undefined, 'and sent straight in');
 });
 
 test('with no engineer, one is trained for the objective even when money is short', () => {
@@ -103,4 +108,72 @@ test('money piling up while the model waits: a combat unit is trained anyway; no
   const modest = world({ own: own(), enemies: [u(1434, 'GACNST', T.Building, 107, 18)], credits: RICH_SPEND - 1000, offers });
   ({ groups } = groupsOf(modest, ''));
   for (const [k, a] of Object.entries(groups.vehicles?.actions ?? {})) if (k !== 'wait') assert.equal(a.auto, undefined, `${k}: left to the model below ${RICH_SPEND}`);
+});
+
+// 0.7.3 report (same mission, defeat again): the lab was recognized and about fifteen engineers were
+// sent for it, each alone, 117 tiles through the defenses; none arrived. The army sat at home
+// "assembling" (4 of 12) and the lab fell at 32:30 as in the previous game: the mission is on a clock.
+test('capture mission: with six units the column pushes beside the lab instead of assembling', () => {
+  const x = world({ own: [...home(), ...tanks(10, CAPTURE_PUSH_UNITS), engineer()], enemies: labBase(), credits: 2000 });
+  const { snap, groups } = groupsOf(x);
+  assert.equal(snap.state.forceReadiness.ready, false, 'short of the attack threshold');
+  const push = groups.tactics.actions.objective_1470;
+  assert.ok(push, 'the push is offered');
+  assert.equal(push.auto, 2);
+  assert.equal(push.targetId, undefined, 'the lab itself is never the target');
+  assert.ok(Math.abs(Math.hypot(push.x - 101, push.y - 27) - CAPTURE_STAGE_TILES) < 1.5, 'the point is beside the lab');
+  assert.ok(push.y > 27, 'on the side our column comes from');
+  assert.ok(!groups.tactics.actions.assemble_force, 'no more gathering at home');
+  const run = executeCandidate(x.api, push, catalog);
+  assert.equal(run.accepted, true);
+  assert.deepEqual(x.calls.at(-1).slice(0, 1), ['attackMove']);
+  assert.ok(!x.calls.some((c) => c[0] === 'attack' && c[2] === 1470));
+  const few = world({ own: [...home(), ...tanks(10, CAPTURE_PUSH_UNITS - 2), engineer()], enemies: labBase(), credits: 2000 });
+  assert.equal(groupsOf(few).groups.tactics.actions.objective_1470?.auto, undefined, 'four units: offered but not automatic');
+});
+
+test('escorted capture: the engineer trails the column and goes in when the column arrives', () => {
+  const eng = engineer(60, 100, 100);
+  const x = world({ own: [...home(), ...tanks(10, 6), eng], enemies: labBase(), credits: 2000 });
+  const { groups } = groupsOf(x);
+  const action = groups.engineering.actions.capture_1470;
+  const run = executeCandidate(x.api, action, catalog);
+  assert.equal(run.accepted, true);
+  assert.ok(!x.calls.some((c) => c[0] === 'order' && c[2]?.type === 7), 'no capture order yet');
+  rememberSpecial(x.memory, action, run, 12000);
+  // The column is on its way, 30 tiles out: the engineer walks behind it.
+  const column = x.self.filter((a) => a.name === 'HTNK');
+  column.forEach((t, i) => { t.tile = { rx: 98 + i, ry: 60 }; });
+  x.memory.mission = { mode: 'attack', ids: column.map((t) => t.id), x: 101, y: 31, since: 12000 };
+  const events = [];
+  x.setTick(12100); maintainSpecial(x.api, x.memory, (e) => events.push(e), catalog);
+  const moved = x.calls.filter((c) => c[0] === 'move' && c[1].includes(60)).at(-1);
+  assert.ok(moved, 'the engineer is moved');
+  assert.ok(moved[3] > 60 && moved[3] < 70, `behind the column (y=${moved[3]})`);
+  assert.ok(!x.calls.some((c) => c[0] === 'order' && c[2]?.type === 7));
+  // The column reaches the lab: the engineer is sent in.
+  column.forEach((t, i) => { t.tile = { rx: 99 + i, ry: 27 + ESCORT_ARRIVE_TILES - 2 }; });
+  x.setTick(12200); maintainSpecial(x.api, x.memory, (e) => events.push(e), catalog);
+  const captureOrder = x.calls.find((c) => c[0] === 'order' && c[2]?.type === 7);
+  assert.deepEqual(captureOrder?.slice(1), [[60], { type: 7, target: { objectId: 1470 } }]);
+  assert.match(events.at(-1).description, /部队已到目标旁/);
+  assert.equal(x.memory.specialTasks[0].escort, false, 'now an ordinary capture task');
+});
+
+test('escorted capture: once the defenders are gone the engineer goes in without waiting for the column', () => {
+  const x = world({ own: [...home(), ...tanks(10, 6), engineer(60, 100, 100)], enemies: labBase(), credits: 2000 });
+  const action = groupsOf(x).groups.engineering.actions.capture_1470;
+  rememberSpecial(x.memory, action, executeCandidate(x.api, action, catalog), 12000);
+  x.enemies.splice(x.enemies.findIndex((e) => e.id === 1467), 1);
+  x.setTick(12100); maintainSpecial(x.api, x.memory, () => {}, catalog);
+  assert.ok(x.calls.some((c) => c[0] === 'order' && c[2]?.type === 7 && c[2].target.objectId === 1470));
+});
+
+test('focus fire never picks the capture target, even for a tank parked next to it', () => {
+  const tank = u(10, 'HTNK', T.Vehicle, 101, 29);
+  const x = world({ own: [...home(), tank], enemies: [lab(), u(1434, 'GACNST', T.Building, 103, 28)] });
+  groupsOf(x);
+  maintainBattle(x.api, catalog, x.memory, () => {});
+  assert.ok(!x.calls.some((c) => c[0] === 'attack' && c[2] === 1470), 'the lab is spared');
+  assert.ok(x.calls.some((c) => c[0] === 'attack' && c[2] === 1434), 'the yard beside it is still fair game');
 });

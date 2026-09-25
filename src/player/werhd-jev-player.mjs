@@ -123,6 +123,9 @@ function roleOf(rule) {
   return rule.category ?? "support or technology";
 }
 
+// Infantry-only armies: above this much money the foot cap rises, and above the second amount
+// training is automatic until the cap.
+export const RICH_INFANTRY_CREDITS = 3000, RICH_INFANTRY_CAP = 40, RICH_INFANTRY_SPEND = 5000;
 // Recent answers per decision group, with the loss / kill totals at the time, so a repeated choice
 // that produced nothing can be shown back to the model and demoted.
 export const RECENT_LIMIT = 8, STALE_REPEATS = 4, STALE_REMOVE = 6;
@@ -550,7 +553,10 @@ export function candidateGroups(api, catalog, snapshot, memory) {
   // caps (six infantry, three of each role) would freeze the force below the attack threshold forever.
   const vehicleArmy=api.production.available(api.QueueType?.Vehicles ?? 3).some(i=>(catalog[i.name]?.weapon?.damage??0)>0&&!catalog[i.name]?.harvester&&!catalog[i.name]?.naval);
   const infantryArmy=!vehicleArmy;
-  const footCap=infantryArmy?Math.min(20,ATTACK_FORCE_SIZE*2):6, roleCap=infantryArmy?footCap:3;
+  // With money piling up the infantry army keeps growing: 0.7.1 (Pentagon mission, conscripts only)
+  // held 20 conscripts against a concrete target for ten minutes with 9,000 credits unspent.
+  const richFoot=infantryArmy&&state.self.credits>=RICH_INFANTRY_CREDITS;
+  const footCap=infantryArmy?(richFoot?RICH_INFANTRY_CAP:Math.min(20,ATTACK_FORCE_SIZE*2)):6, roleCap=infantryArmy?footCap:3;
   const combatFoot=scoutUnits.filter(u=>(catalog[u.name]?.weapon?.damage??0)>0&&!catalog[u.name]?.engineer).length;
   // Money piling up while the army is short: the model saying "wait" is no longer a real choice.
   // "Short" is measured against the current attack threshold (12 or 16 after failed attacks), which
@@ -689,7 +695,7 @@ export function candidateGroups(api, catalog, snapshot, memory) {
   const readiness = forceReadiness(api, catalog, state, army, tanks, memory);
   state.forceReadiness = readiness;
   memory.lastReady = readiness.ready;
-  if (infantryArmy && combatFoot < readiness.threshold && state.self.credits >= 3000) for (const a of combatTraining) a.auto = 2;
+  if (infantryArmy && state.self.credits >= 3000 && (combatFoot < readiness.threshold || state.self.credits >= RICH_INFANTRY_SPEND && combatFoot < footCap)) for (const a of combatTraining) a.auto = 2;
   // Ready on paper but only a handful of units free to move: gather first instead of feeding them in.
   const tooFew = readiness.canBuildAnything && active.length < MIN_ATTACK_UNITS;
   const ready = readiness.ready && !tooFew;

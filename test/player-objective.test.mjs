@@ -138,7 +138,9 @@ test('after a failed attack the higher threshold drives automatic training', () 
   const snap = collectState(w.api, catalog), groups = candidateGroups(w.api, catalog, snap, w.memory);
   assert.equal(snap.state.forceReadiness.threshold, 12); assert.equal(snap.state.forceReadiness.ready, false);
   assert.equal(groups.infantry.actions.produce_GI.auto, 2, '8 of 12 with 25,000 credits: training is not optional');
-  const calm = world({ own:[...home(), ...squad(8, 14, 14)] });
+  // 0.7.1: with 25,000 credits unspent training is forced even at the normal threshold, so the calm
+  // case is checked with ordinary money.
+  const calm = world({ own:[...home(), ...squad(8, 14, 14)], credits:3500 });
   const g2 = candidateGroups(calm.api, catalog, collectState(calm.api, catalog), calm.memory);
   assert.equal(g2.infantry.actions.produce_GI?.auto, undefined, 'at the normal threshold of 8 nothing is forced');
 });
@@ -484,4 +486,23 @@ test('the Pentagon built from four "Wash Pent" pieces is found, and every piece 
   candidateGroups(w.api, catalog, after, w.memory);
   assert.equal(w.memory.objectiveTarget.done, true, 'all four pieces gone: the objective is complete');
   assert.deepEqual([...w.memory.objectiveDone].sort(), [1701, 1702, 1703, 1704]);
+});
+
+// 0.7.1 report (Pentagon mission, conscripts only): the foot cap of 16 held the army at about 20
+// conscripts for ten minutes against a concrete target while credits climbed past 9,000.
+test('an infantry-only army keeps training while money piles up, and stays capped when money is short', async () => {
+  const { RICH_INFANTRY_CAP } = await import('../src/player/werhd-jev-player.mjs');
+  const rich = world({ own:[...home(), ...squad(20)], enemies:enemyBase(), credits:9000 });
+  let g = candidateGroups(rich.api, catalog, collectState(rich.api, catalog), rich.memory);
+  assert.ok(g.infantry?.actions.produce_GI, '20 conscripts and 9,000 credits: more are offered');
+  assert.equal(g.infantry.actions.produce_GI.auto, 2, 'and trained automatically');
+  const mid = world({ own:[...home(), ...squad(20)], enemies:enemyBase(), credits:3500 });
+  g = candidateGroups(mid.api, catalog, collectState(mid.api, catalog), mid.memory);
+  assert.ok(g.infantry?.actions.produce_GI, '3,500 credits: offered'); assert.equal(g.infantry.actions.produce_GI.auto, undefined, 'but left to the model');
+  const poor = world({ own:[...home(), ...squad(20)], enemies:enemyBase(), credits:1500 });
+  g = candidateGroups(poor.api, catalog, collectState(poor.api, catalog), poor.memory);
+  assert.ok(!g.infantry?.actions?.produce_GI, '1,500 credits: the old cap of 16 still applies');
+  const full = world({ own:[...home(), ...squad(RICH_INFANTRY_CAP)], enemies:enemyBase(), credits:20000 });
+  g = candidateGroups(full.api, catalog, collectState(full.api, catalog), full.memory);
+  assert.ok(!g.infantry?.actions?.produce_GI, `at ${RICH_INFANTRY_CAP} the cap holds even when rich`);
 });

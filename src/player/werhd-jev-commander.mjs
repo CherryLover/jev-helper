@@ -37,17 +37,27 @@ export function unitCard(name, type, catalog, api, maxHp) {
 export const squadUnits = (units, catalog, api) => units.filter((u) => u.type !== api.ObjectType.Building && !catalog[u.name]?.harvester && !catalog[u.name]?.engineer && u.primaryWeapon);
 
 // Units close together that share a task form a squad. Ids stay stable between turns: a new squad
-// inherits the id of the old squad it shares the most units with.
+// inherits the id of the old squad it shares the most units with. Units whose squads have different
+// intents never merge, even when they pass close by (a column walking through the home guard kept
+// the guard's intent and was pulled back); units without an intent (new recruits) join the nearest
+// squad within reach.
+export const intentKey = (i) => `${i.action}|${i.target ?? ''}|${i.x ?? ''},${i.y ?? ''}`;
 export function formSquads(units, memory, radius = SQUAD_RADIUS) {
-  const left = [...units], squads = [];
-  while (left.length) {
-    const seed = left.shift(), members = [seed];
-    for (let i = 0; i < members.length; i++)
-      for (let j = left.length - 1; j >= 0; j--)
-        if (distance(left[j].tile, members[i].tile) <= radius) members.push(...left.splice(j, 1));
-    squads.push(members);
+  const previous = memory.squads ?? new Map(), prevOf = new Map();
+  for (const [sid, ids] of previous) for (const id of ids) prevOf.set(id, sid);
+  const keyOf = (u) => { const i = memory.intents?.get(prevOf.get(u.id)); return i ? intentKey(i) : ''; };
+  const byKey = new Map();
+  for (const u of units) { const k = keyOf(u); if (!byKey.has(k)) byKey.set(k, []); byKey.get(k).push(u); }
+  const squads = [];
+  for (const [k, list] of byKey) if (k) squads.push(...clusters(list, radius));
+  const leftover = [];
+  for (const u of byKey.get('') ?? []) {
+    let best, bestD = Infinity;
+    for (const members of squads) for (const m of members) { const d = distance(m.tile, u.tile); if (d <= radius && d < bestD) { best = members; bestD = d; } }
+    if (best) best.push(u); else leftover.push(u);
   }
-  const previous = memory.squads ?? new Map(), taken = new Set(), next = new Map();
+  squads.push(...clusters(leftover, radius));
+  const taken = new Set(), next = new Map();
   let counter = memory.squadCounter ?? 0;
   const result = squads.sort((a, b) => b.length - a.length).map((members) => {
     const ids = new Set(members.map((u) => u.id));
@@ -121,7 +131,11 @@ export function buildBrief(api, catalog, snapshot, memory) {
   const enemyGroups = clusters(enemyUnits.filter((e) => e.zone !== Air), ENEMY_GROUP_RADIUS).map((members) => {
     const c = centerOf(members);
     const nearest = squads.map((q) => ({ q: q.id, d: distance(centerOf(q.members), c) })).sort((a, b) => a.d - b.d)[0];
-    return { units: countBy(members, catalog), n: members.length, at: [c.rx, c.ry], hpPct: hpOf(members), nearestSquad: nearest ? `${nearest.q} ${Math.round(nearest.d)}` : '' };
+    // Up to three ids the model can name in an attack: the one closest to our nearest squad, then the toughest.
+    const from = nearest ? centerOf(squads.find((q) => q.id === nearest.q).members) : c;
+    const byNear = [...members].sort((a, b) => distance(a.tile, from) - distance(b.tile, from));
+    const ids = [...new Set([byNear[0], ...[...members].sort((a, b) => (b.maxHitPoints ?? 0) - (a.maxHitPoints ?? 0) || distance(a.tile, from) - distance(b.tile, from))].map((e) => e.id))].slice(0, 3);
+    return { units: countBy(members, catalog), n: members.length, at: [c.rx, c.ry], hpPct: hpOf(members), ids, nearestSquad: nearest ? `${nearest.q} ${Math.round(nearest.d)}` : '' };
   }).sort((a, b) => b.n - a.n).slice(0, BRIEF_ENEMY_GROUPS);
   const air = enemyUnits.filter((e) => e.zone === Air);
   const houses = hostile.filter((u) => u.garrison?.canOccupy && u.garrison.count < u.garrison.capacity);
@@ -158,6 +172,7 @@ export function buildBrief(api, catalog, snapshot, memory) {
     attackTargets: [...enemyUnits.map((e) => e.id), ...enemyBuildings.map((b) => b.id), ...remembered.map((k) => k.id)],
     houses: houses.map((h) => h.id), huts: huts.map((h) => h.id), captures: enemyBuildings.filter((b) => isCapturable(catalog[b.name], b.name)).map((b) => b.id),
     produce: producible.map((p) => p.id),
+    mapSize: api.map.size?.() ?? null,
   };
   return {
     tick, gameSeconds: s.gameSeconds, credits: s.self?.credits ?? 0, power: s.self?.power ?? null,

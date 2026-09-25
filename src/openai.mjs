@@ -135,7 +135,7 @@ const COMMANDER = [
   'bridges, production options, the mission objective, and how your last orders turned out.',
   'Fields: hpPct is percent of maximum health; hp "a/b" is current/maximum health points; cards.maxHp is a unit type\'s full health; dps is estimated damage per second of ONE unit against that target class,',
   'so time to destroy ≈ target hp / (dps × number of attackers).',
-  'Basic rules: move walks without fighting, attack_move fights anything met on the way, attack goes for one target. Infantry tagged can_garrison may enter an empty garrisonable house (garrison, target = house id):',
+  'Basic rules: move walks without fighting, attack_move fights anything met on the way, attack goes for one target (a building, or one enemy unit: each enemy group lists up to three unit ids; to fight a whole group, attack_move to its position). Infantry tagged can_garrison may enter an empty garrisonable house (garrison, target = house id):',
   'inside they are protected by the building and fire from cover, so a house within reach of an enemy defense is how infantry take that defense without being cut down in the open.',
   'Engineers are unarmed; capture consumes the engineer and takes the building intact; repair_bridge sends one into a bridge repair hut to restore a destroyed bridge.',
   'Decide the plan. Reason from the cards: a unit with a shorter range than an enemy defense takes fire it cannot answer until it closes in; garrisoned infantry fire from cover;',
@@ -209,23 +209,26 @@ export function parseCommanderResponse(body, legal = {}, name = 'OpenAI') {
   const num = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : undefined);
   const reason = (o) => (typeof o?.reason === 'string' ? o.reason.slice(0, 200) : '');
   const rejected = [], squads = [], production = [], engineers = [], seen = new Set();
+  // Coordinates must lie on the map the brief described (legal.mapSize); without it any integer passes.
+  const size = legal.mapSize, onMap = (x, y) => !size || x >= 0 && y >= 0 && x < size.width && y < size.height;
   for (const o of Array.isArray(data.squads) ? data.squads.slice(0, 20) : []) {
-    const squad = String(o?.squad ?? ''), action = String(o?.action ?? ''), target = num(o?.target), x = num(o?.x), y = num(o?.y);
+    const squad = String(o?.squad ?? '').slice(0, 40), action = String(o?.action ?? '').slice(0, 40), target = num(o?.target), x = num(o?.x), y = num(o?.y);
     const bad = !has(legal.squads, squad) ? 'unknown squad' : seen.has(squad) ? 'duplicate squad' : !SQUAD_ACTIONS.includes(action) ? 'unknown action'
       : action === 'attack' && !has(legal.attackTargets, target) ? 'unknown attack target'
       : action === 'garrison' && !has(legal.houses, target) ? 'unknown house'
-      : ['attack_move', 'move', 'hold', 'scout'].includes(action) && (x === undefined || y === undefined) ? 'missing coordinates' : '';
+      : ['attack_move', 'move', 'hold', 'scout'].includes(action) && (x === undefined || y === undefined) ? 'missing coordinates'
+      : ['attack_move', 'move', 'hold', 'scout'].includes(action) && !onMap(x, y) ? 'coordinates outside the map' : '';
     if (bad) { rejected.push({ kind: 'squad', squad, action, target, reason: bad }); continue; }
     seen.add(squad);
     squads.push({ squad, action, ...(target !== undefined && ['attack', 'garrison'].includes(action) ? { target } : {}), ...(x !== undefined && y !== undefined && !['attack', 'garrison', 'defend_base', 'retreat'].includes(action) ? { x, y } : {}), reason: reason(o) });
   }
   for (const o of Array.isArray(data.production) ? data.production.slice(0, 6) : []) {
-    const item = String(o?.item ?? ''), count = Math.min(5, Math.max(1, num(o?.count) ?? 1));
+    const item = String(o?.item ?? '').slice(0, 40), count = Math.min(5, Math.max(1, num(o?.count) ?? 1));
     if (!has(legal.produce, item)) { rejected.push({ kind: 'production', item, reason: 'not producible now' }); continue; }
     production.push({ item, count, reason: reason(o) });
   }
   for (const o of Array.isArray(data.engineers) ? data.engineers.slice(0, 4) : []) {
-    const action = String(o?.action ?? ''), target = num(o?.target);
+    const action = String(o?.action ?? '').slice(0, 40), target = num(o?.target);
     const bad = !ENGINEER_ACTIONS.includes(action) ? 'unknown action' : action === 'capture' && !has(legal.captures, target) ? 'not capturable'
       : action === 'repair_bridge' && !has(legal.huts, target) ? 'unknown bridge hut' : '';
     if (bad) { rejected.push({ kind: 'engineer', action, target, reason: bad }); continue; }

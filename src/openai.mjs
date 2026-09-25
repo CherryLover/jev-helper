@@ -123,3 +123,103 @@ export const refusesForcedTool = (status, detail) => status === 400 && /tool_cho
 export function serviceError(raw) {
   try { const e = JSON.parse(raw)?.error; return String(typeof e === 'string' ? e : e?.message ?? '').replace(/\s+/g, ' ').slice(0, 160); } catch { return ''; }
 }
+
+// ---- Commander mode: the model plans from the brief instead of picking among prepared options ----
+export const COMMAND_TOOL = 'issue_orders';
+export const SQUAD_ACTIONS = /* @__PURE__ */ Object.freeze(['attack', 'attack_move', 'move', 'hold', 'garrison', 'defend_base', 'retreat', 'scout']);
+export const ENGINEER_ACTIONS = /* @__PURE__ */ Object.freeze(['capture', 'repair_bridge']);
+const COMMANDER = [
+  'You are the field commander of one player in WannaFire, a browser remake of Command & Conquer: Red Alert 2.',
+  'Each turn you get a brief: unit cards (what every unit type can do: ground range, anti-air range, estimated damage per second against infantry / armor / buildings / aircraft, tags such as can_garrison, anti_air_only, engineer),',
+  'your squads (composition, position, health, current intent, who is shooting them and whether that enemy outranges them), enemy groups and buildings (range, anti-air-only, houses within reach of each defense),',
+  'bridges, production options, the mission objective, and how your last orders turned out.',
+  'Fields: hpPct is percent of maximum health; hp "a/b" is current/maximum health points; cards.maxHp is a unit type\'s full health; dps is estimated damage per second of ONE unit against that target class,',
+  'so time to destroy ≈ target hp / (dps × number of attackers).',
+  'Basic rules: move walks without fighting, attack_move fights anything met on the way, attack goes for one target. Infantry tagged can_garrison may enter an empty garrisonable house (garrison, target = house id):',
+  'inside they are protected by the building and fire from cover, so a house within reach of an enemy defense is how infantry take that defense without being cut down in the open.',
+  'Engineers are unarmed; capture consumes the engineer and takes the building intact; repair_bridge sends one into a bridge repair hut to restore a destroyed bridge.',
+  'Decide the plan. Reason from the cards: a unit with a shorter range than an enemy defense takes fire it cannot answer until it closes in; garrisoned infantry fire from cover;',
+  'anti_air_only defenses cannot hurt ground units and only matter for aircraft; units with near-zero damage against a target class should not be sent at it;',
+  'concentrate force instead of sending small groups one by one; protect the base and the economy; pursue the mission objective when one is given.',
+  'Only use ids, squad names, unit codes and coordinates that appear in the brief. Squads you do not mention keep their current intent.',
+  'Answer by calling issue_orders. Keep every reason to one short sentence and the note to one or two sentences.',
+].join(' ');
+
+export function commanderSchema(legal = {}) {
+  const ids = (list) => (list?.length ? { type: 'integer', enum: list } : { type: 'integer' });
+  return {
+    type: 'object',
+    properties: {
+      note: { type: 'string', description: 'The overall plan in one or two sentences.' },
+      squads: { type: 'array', items: { type: 'object', properties: {
+        squad: legal.squads?.length ? { type: 'string', enum: legal.squads } : { type: 'string' },
+        action: { type: 'string', enum: [...SQUAD_ACTIONS] },
+        target: { type: 'integer', description: 'attack: enemy id; garrison: house id.' },
+        x: { type: 'integer' }, y: { type: 'integer' },
+        reason: { type: 'string' },
+      }, required: ['squad', 'action'] } },
+      production: { type: 'array', items: { type: 'object', properties: {
+        item: legal.produce?.length ? { type: 'string', enum: legal.produce } : { type: 'string' },
+        count: { type: 'integer', minimum: 1, maximum: 5 }, reason: { type: 'string' },
+      }, required: ['item'] } },
+      engineers: { type: 'array', items: { type: 'object', properties: {
+        action: { type: 'string', enum: [...ENGINEER_ACTIONS] }, target: ids([...(legal.captures ?? []), ...(legal.huts ?? [])]), reason: { type: 'string' },
+      }, required: ['action', 'target'] } },
+    },
+    required: ['note', 'squads'],
+  };
+}
+
+export function buildCommanderRequest({ model, brief, toolChoice = 'forced' }) {
+  const { legal, ...shown } = brief;
+  return {
+    model,
+    messages: [
+      { role: 'system', content: toolChoice === 'auto' ? `${COMMANDER} Always answer by calling ${COMMAND_TOOL}.` : COMMANDER },
+      { role: 'user', content: JSON.stringify(shown) },
+    ],
+    tools: [{ type: 'function', function: { name: COMMAND_TOOL, description: 'Give orders to squads, production and engineers for the next period.', parameters: commanderSchema(legal) } }],
+    tool_choice: toolChoice === 'auto' ? 'auto' : { type: 'function', function: { name: COMMAND_TOOL } },
+  };
+}
+
+// Every order is checked against what the brief offered. Invalid orders are returned with a reason
+// (and shown to the model next turn); the valid ones stand.
+export function parseCommanderResponse(body, legal = {}, name = 'OpenAI') {
+  const message = body?.choices?.[0]?.message ?? {};
+  const call = message.tool_calls?.find((c) => c?.function?.name === COMMAND_TOOL) ?? message.tool_calls?.[0];
+  const data = parseObject(call?.function?.arguments ?? message.function_call?.arguments ?? textOf(message.content));
+  if (!data || typeof data !== 'object') throw new Error(`${name} 返回的内容无法解析。`);
+  const has = (list, v) => Array.isArray(list) && list.includes(v);
+  const num = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : undefined);
+  const reason = (o) => (typeof o?.reason === 'string' ? o.reason.slice(0, 200) : '');
+  const rejected = [], squads = [], production = [], engineers = [], seen = new Set();
+  for (const o of Array.isArray(data.squads) ? data.squads.slice(0, 20) : []) {
+    const squad = String(o?.squad ?? ''), action = String(o?.action ?? ''), target = num(o?.target), x = num(o?.x), y = num(o?.y);
+    const bad = !has(legal.squads, squad) ? 'unknown squad' : seen.has(squad) ? 'duplicate squad' : !SQUAD_ACTIONS.includes(action) ? 'unknown action'
+      : action === 'attack' && !has(legal.attackTargets, target) ? 'unknown attack target'
+      : action === 'garrison' && !has(legal.houses, target) ? 'unknown house'
+      : ['attack_move', 'move', 'hold', 'scout'].includes(action) && (x === undefined || y === undefined) ? 'missing coordinates' : '';
+    if (bad) { rejected.push({ kind: 'squad', squad, action, target, reason: bad }); continue; }
+    seen.add(squad);
+    squads.push({ squad, action, ...(target !== undefined && ['attack', 'garrison'].includes(action) ? { target } : {}), ...(x !== undefined && y !== undefined && !['attack', 'garrison', 'defend_base', 'retreat'].includes(action) ? { x, y } : {}), reason: reason(o) });
+  }
+  for (const o of Array.isArray(data.production) ? data.production.slice(0, 6) : []) {
+    const item = String(o?.item ?? ''), count = Math.min(5, Math.max(1, num(o?.count) ?? 1));
+    if (!has(legal.produce, item)) { rejected.push({ kind: 'production', item, reason: 'not producible now' }); continue; }
+    production.push({ item, count, reason: reason(o) });
+  }
+  for (const o of Array.isArray(data.engineers) ? data.engineers.slice(0, 4) : []) {
+    const action = String(o?.action ?? ''), target = num(o?.target);
+    const bad = !ENGINEER_ACTIONS.includes(action) ? 'unknown action' : action === 'capture' && !has(legal.captures, target) ? 'not capturable'
+      : action === 'repair_bridge' && !has(legal.huts, target) ? 'unknown bridge hut' : '';
+    if (bad) { rejected.push({ kind: 'engineer', action, target, reason: bad }); continue; }
+    engineers.push({ action, target, reason: reason(o) });
+  }
+  const u = body?.usage ?? {};
+  return {
+    orders: { note: typeof data.note === 'string' ? data.note.slice(0, 400) : '', squads, production, engineers },
+    rejected, model: typeof body?.model === 'string' ? body.model.slice(0, 160) : '',
+    usage: { input_tokens: Number(u.prompt_tokens ?? u.input_tokens) || 0, output_tokens: Number(u.completion_tokens ?? u.output_tokens) || 0 },
+  };
+}

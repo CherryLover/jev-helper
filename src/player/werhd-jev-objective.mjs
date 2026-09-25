@@ -114,12 +114,21 @@ export function trackObjective(api, catalog, memory, from) {
   const tick = api.tick(), B = api.ObjectType.Building;
   let hostile = []; try { hostile = api.units('hostile') ?? []; } catch { hostile = []; }
   let target = memory.objectiveTarget;
+  const hpOf = (u) => u?.maxHitPoints ? Math.round(u.hitPoints / u.maxHitPoints * 100) : undefined;
+  // After a capture the building is still followed: a captured objective that changes hands again or
+  // disappears is what a report needs to explain a defeat right after the capture (0.7.4: the Battle
+  // Lab was captured, left our building list 6 s later, and the game declared a defeat 5 s after).
+  if (target?.captured) {
+    const mine = (api.units('self') ?? []).find(u => u.id === target.id), theirs = hostile.find(u => u.id === target.id);
+    if (mine) { target.hp = hpOf(mine); delete target.afterCapture; }
+    else if (!target.afterCapture) target.afterCapture = { tick, how: theirs ? 'changed_hands' : api.map.visible(target.x, target.y) ? 'gone' : 'out_of_sight', lastHp: target.hp };
+  }
   if (target && !target.done) {
     const seen = hostile.find(u => u.id === target.id);
     // Taken by our engineer: no longer something to attack, and not a kill either.
-    const ours = !seen && (api.units('self') ?? []).some(u => u.id === target.id);
-    if (seen) Object.assign(target, { x: seen.tile.rx, y: seen.tile.ry, lastSeen: tick, visible: true });
-    else if (ours) { Object.assign(target, { done: true, captured: true, capturedTick: tick, visible: true }); memory.objectiveDone.add(target.id); }
+    const ours = !seen && (api.units('self') ?? []).find(u => u.id === target.id);
+    if (seen) Object.assign(target, { x: seen.tile.rx, y: seen.tile.ry, lastSeen: tick, visible: true, hp: hpOf(seen) });
+    else if (ours) { Object.assign(target, { done: true, captured: true, capturedTick: tick, visible: true, hp: hpOf(ours) }); memory.objectiveDone.add(target.id); }
     // A capture target that vanished was destroyed: the capture failed.
     else if (api.map.visible(target.x, target.y)) { Object.assign(target, { done: true, destroyedTick: tick, visible: false, ...(target.mode === 'capture' ? { lost: true } : {}) }); memory.objectiveDone.add(target.id); }
     else target.visible = false;

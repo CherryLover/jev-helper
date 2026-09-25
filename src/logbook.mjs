@@ -7,6 +7,7 @@ export const LOG_MAX_CHARS = 4_000_000; // JSON size guard: storage.local is lim
 const short = (value, n) => typeof value === 'string' ? value.slice(0, n) : value == null ? '' : String(value).slice(0, n);
 const number = n => typeof n === 'number' && Number.isFinite(n) ? n : null;
 
+const afterCapture = (a) => a ? { afterCapture: { tick: number(a.tick), how: short(a.how, 16), lastHp: number(a.lastHp) } } : {};
 // Compact snapshot of the state that was sent with a decision: numbers and flags only.
 export function stateSummary(state = {}) {
   return {
@@ -22,7 +23,9 @@ export function stateSummary(state = {}) {
     ready: state.forceReadiness ? state.forceReadiness.ready === true : null, readyReason: short(state.forceReadiness?.reason, 160),
     ...(state.objectiveTarget ? { objective: state.objectiveTarget.found === false
       ? { found: false, seen: (state.objectiveTarget.seen ?? []).slice(0, 30).map((n) => short(n, 60)) }
-      : { found: true, id: number(state.objectiveTarget.id), label: short(state.objectiveTarget.label, 60), name: short(state.objectiveTarget.name, 40), done: !!state.objectiveTarget.done } } : {}),
+      : { found: true, id: number(state.objectiveTarget.id), label: short(state.objectiveTarget.label, 60), name: short(state.objectiveTarget.name, 40), done: !!state.objectiveTarget.done,
+        ...(state.objectiveTarget.mode ? { mode: short(state.objectiveTarget.mode, 12) } : {}), ...(state.objectiveTarget.captured ? { captured: true } : {}), ...(state.objectiveTarget.lost ? { lost: true } : {}),
+        ...(number(state.objectiveTarget.hp) !== null ? { hp: state.objectiveTarget.hp } : {}), ...(afterCapture(state.objectiveTarget.afterCapture)) } } : {}),
     escalation: number(state.combatAssessment?.level), recentLost: number(state.combatAssessment?.recentLost), recentKilled: number(state.combatAssessment?.recentKilled),
     hints: Object.fromEntries(Object.entries(state.recentChoices ?? {}).filter(([, h]) => h.stale || h.removed).map(([id, h]) => [short(id, 24), { streak: number(h.streak), lostSince: number(h.lostSince), killedSince: number(h.killedSince), removed: h.removed === true }])),
   };
@@ -75,7 +78,10 @@ export function eventEntry(e, at) {
   if (kind === 'stale') return { ...base, currentTick: number(e.currentTick), latencyMs: number(e.latencyMs) };
   if (kind === 'start') return { ...base, maxDecisions: number(e.maxDecisions), policy: short(e.policy, 40) };
   if (kind === 'stop') return { ...base, reason: short(e.reason, 40) };
-  if (kind === 'outcome') return { ...base, result: short(e.result, 24) };
+  if (kind === 'outcome') return { ...base, result: short(e.result, 24),
+    ...(Array.isArray(e.players) ? { players: e.players.slice(0, 16).map((p) => ({ name: short(p?.name, 30), allied: !!p?.allied, defeated: !!p?.defeated })) } : {}),
+    ...(e.objective ? { objective: { id: number(e.objective.id), label: short(e.objective.label, 60), done: !!e.objective.done, captured: !!e.objective.captured, lost: !!e.objective.lost, hp: number(e.objective.hp), ...afterCapture(e.objective.afterCapture) } } : {}),
+    ...(number(e.ownBuildings) !== null ? { ownBuildings: e.ownBuildings } : {}) };
   if (kind === 'error') return { ...base, message: short(e.message, 240) };
   if (kind === 'meta') return { ...base, pageTitle: short(e.pageTitle, 120), playerCount: number(e.playerCount), opponents: number(e.opponents), map: e.map && number(e.map.width) !== null ? { width: e.map.width, height: e.map.height } : null, startTick: number(e.startTick) };
   if (['place', 'micro', 'observed', 'camera'].includes(kind)) return { ...base, name: short(e.name, 40), text: short(e.description ?? e.purpose ?? e.message, 160) };

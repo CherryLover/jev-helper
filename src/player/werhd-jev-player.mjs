@@ -419,6 +419,7 @@ export function rememberEnemyBuildings(api, catalog, memory, enemies) {
 export function objectiveState(api, catalog, memory, base, state) {
   const objective = trackObjective(api, catalog, memory, base?.tile);
   state.objectiveTarget = objective ? { id: objective.id, name: objective.name, label: objective.label, x: objective.x, y: objective.y, lastSeenTick: objective.lastSeen, visible: !!objective.visible, done: !!objective.done, captured: !!objective.captured,
+    ...(Number.isFinite(objective.hp) ? { hp: objective.hp } : {}), ...(objective.afterCapture ? { afterCapture: objective.afterCapture } : {}),
     ...(objective.mode === "capture" ? { mode: "capture", ...(objective.lost ? { lost: true } : {}) } : {}) }
     : memory.objective ? { found: false, keywords: [...(memory.objectiveKeys?.words ?? []), ...(memory.objectiveKeys?.capture ?? [])],
       // What the visible buildings are actually called, so an unmatched objective can be fixed from a report.
@@ -1886,10 +1887,17 @@ export async function attachJevPlayer(api, options = {}) {
       }
       const me = api.me();
       if (me.defeated || me.isObserver) {
+        // What the game looked like at the end, so a defeat right after an objective can be explained.
+        let players = [];
+        try { players = (api.players?.() ?? []).map((p) => ({ name: String(p.name ?? "").slice(0, 30), allied: !!p.allied, defeated: !!p.defeated })); } catch {}
+        const t = memory.objectiveTarget;
         emit({
           kind: "outcome",
           result: me.defeated ? "defeat" : "observer",
           tick: api.tick(),
+          players,
+          ...(t ? { objective: { id: t.id, label: t.label, done: !!t.done, captured: !!t.captured, lost: !!t.lost, hp: t.hp, afterCapture: t.afterCapture } } : {}),
+          ownBuildings: api.units("self").filter((u) => u.type === api.ObjectType.Building).length,
         });
         stop("defeated_or_observer");
         return;

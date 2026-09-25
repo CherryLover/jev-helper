@@ -177,3 +177,27 @@ test('focus fire never picks the capture target, even for a tank parked next to 
   assert.ok(!x.calls.some((c) => c[0] === 'attack' && c[2] === 1470), 'the lab is spared');
   assert.ok(x.calls.some((c) => c[0] === 'attack' && c[2] === 1434), 'the yard beside it is still fair game');
 });
+
+// 0.7.4 report: the lab was captured, left our building list 6 s later and the game declared a
+// defeat 5 s after that; the log could not tell whether it was destroyed or handed to another house.
+test('after a capture the objective is still followed, and the report says what happened to it', async () => {
+  const { stateSummary, eventEntry } = await import('../src/logbook.mjs');
+  const x = world({ own: [...home(), ...tanks(10, 6), engineer()], enemies: labBase() });
+  groupsOf(x);
+  const taken = x.enemies.splice(0, 1)[0]; taken.hitPoints = 60; taken.maxHitPoints = 100; x.self.push(taken);
+  let s = groupsOf(x).snap.state;
+  assert.equal(s.objectiveTarget.captured, true); assert.equal(s.objectiveTarget.hp, 60);
+  // Handed to another house: visible again among the non-friendly buildings.
+  x.self.splice(x.self.indexOf(taken), 1); x.enemies.push(taken); x.setTick(12100);
+  s = groupsOf(x).snap.state;
+  assert.deepEqual(s.objectiveTarget.afterCapture, { tick: 12100, how: 'changed_hands', lastHp: 60 });
+  assert.deepEqual(stateSummary(s).objective.afterCapture, { tick: 12100, how: 'changed_hands', lastHp: 60 });
+  const out = eventEntry({ kind: 'outcome', tick: 12150, result: 'defeat', players: [{ name: 'Player 1', allied: true, defeated: true }],
+    objective: { id: 1470, label: 'Allied Battle Lab', done: true, captured: true, hp: 60, afterCapture: { tick: 12100, how: 'changed_hands', lastHp: 60 } }, ownBuildings: 3 }, 1);
+  assert.equal(out.objective.afterCapture.how, 'changed_hands'); assert.equal(out.players[0].defeated, true); assert.equal(out.ownBuildings, 3);
+  // Destroyed while ours: gone from a visible tile.
+  const y = world({ own: [...home(), ...tanks(10, 6), engineer()], enemies: labBase() });
+  groupsOf(y); const l = y.enemies.splice(0, 1)[0]; y.self.push(l); groupsOf(y);
+  y.self.splice(y.self.indexOf(l), 1); y.setTick(12200);
+  assert.equal(groupsOf(y).snap.state.objectiveTarget.afterCapture.how, 'gone');
+});

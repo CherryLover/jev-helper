@@ -116,7 +116,7 @@ async function fetchModels(){
 }
 function displayConfig(){
  $('api-base').value=config.apiBase;$('model').value=config.model;$('local-base').value=config.localBase;$('local-model').value=config.localModel;
- $('openai-base').value=config.openaiBase??DEFAULTS.openaiBase;$('openai-key').value=config.openaiKey??'';$('openai-mode').value=config.openaiMode==='json'?'json':'tools';models=config.openaiModels??[];renderModels(config.openaiModel);
+ $('openai-base').value=config.openaiBase??DEFAULTS.openaiBase;$('openai-key').value=config.openaiKey??'';$('openai-mode').value=config.openaiMode==='json'?'json':'tools';$('strategy-mode').value=config.strategyMode==='commander'?'commander':'choices';models=config.openaiModels??[];renderModels(config.openaiModel);
  // Stored keys are shown masked; the eye button reveals them on demand.
  $('api-key').value=config.apiKey??'';$('local-key').value=config.localKey??'';$('objective').value=config.objective??'';showProvider(config.provider);renderPlaintextWarnings();renderAllowedHosts();$('hotkey').value=config.hotkey;$('budget').value=config.maxDecisions;$('auto-camera').checked=config.autoCamera;$('show-overlay').checked=config.showOverlay;$('auto-report').checked=config.autoReport!==false;keyPlaceholder();
 }
@@ -148,6 +148,7 @@ function renderCharts(s){
 function eventText(e){
  if(config.language!=='en')return e.text;
  const key=`event_${e.kind}`,name=tr(messages[key]?key:'event_other');
+ if(e.kind==='command')return `${name} · ${e.choice||''}`;
  if(e.kind==='action')return `${name} · ${e.choice||e.actionType||''} · ${tr(e.reason==='wait'?'waitLabel':e.accepted?'acceptedLabel':'skippedLabel')}`;
  if(e.kind==='stop'&&messages[e.reason])return `${name} · ${tr(e.reason)}`;
  return `${name}${e.choice?' · '+e.choice:''}`;
@@ -206,7 +207,7 @@ $('hotkey').addEventListener('keydown',e=>{if(e.key==='Tab')return;e.preventDefa
 $('settings').addEventListener('submit',async e=>{
  e.preventDefault();
  try{
-  const input={language:config.language,provider:selectedProvider(),apiKey:$('api-key').value.trim(),apiBase:$('api-base').value.trim(),model:$('model').value.trim(),localKey:$('local-key').value.trim(),localBase:$('local-base').value.trim(),localModel:$('local-model').value.trim(),openaiKey:$('openai-key').value.trim(),openaiBase:$('openai-base').value.trim(),openaiModel:$('openai-model').value,openaiMode:$('openai-mode').value,openaiModels:models,hotkey:$('hotkey').value,autoCamera:$('auto-camera').checked,showOverlay:$('show-overlay').checked,maxDecisions:$('budget').value.trim()===''?NaN:Number($('budget').value),objective:$('objective').value};
+  const input={language:config.language,provider:selectedProvider(),apiKey:$('api-key').value.trim(),apiBase:$('api-base').value.trim(),model:$('model').value.trim(),localKey:$('local-key').value.trim(),localBase:$('local-base').value.trim(),localModel:$('local-model').value.trim(),openaiKey:$('openai-key').value.trim(),openaiBase:$('openai-base').value.trim(),openaiModel:$('openai-model').value,openaiMode:$('openai-mode').value,strategyMode:$('strategy-mode').value,openaiModels:models,hotkey:$('hotkey').value,autoCamera:$('auto-camera').checked,showOverlay:$('show-overlay').checked,maxDecisions:$('budget').value.trim()===''?NaN:Number($('budget').value),objective:$('objective').value};
   input.allowedHosts=config.allowedHosts??[];
   clearFieldErrors();if(showFieldErrors(fieldErrors(input,{requireKey:true}))){if(['localBase','apiBase','openaiBase'].some(f=>fieldMessages[f]?.includes('允许')))$('allowed-hosts-box').open=true;return;}
   validateSettings(input);

@@ -33,6 +33,9 @@ export function unitCard(name, type, catalog, api, maxHp) {
   return { id: name, name: r.label ?? name, kind: kindOf(r, type, api), ...(maxHp ? { maxHp } : {}), cost: r.cost ?? 0, speed: r.speed ?? 0, armor: r.armor ?? '', range: r1(groundRange), airRange: r1(airRange), dps: versus(r, api), tags };
 }
 
+// What forms squads: armed mobile units, not miners or engineers (engineers are listed apart).
+export const squadUnits = (units, catalog, api) => units.filter((u) => u.type !== api.ObjectType.Building && !catalog[u.name]?.harvester && !catalog[u.name]?.engineer && u.primaryWeapon);
+
 // Units close together that share a task form a squad. Ids stay stable between turns: a new squad
 // inherits the id of the old squad it shares the most units with.
 export function formSquads(units, memory, radius = SQUAD_RADIUS) {
@@ -84,7 +87,7 @@ export function buildBrief(api, catalog, snapshot, memory) {
   const hostile = api.units('hostile') ?? [];
   const B = api.ObjectType.Building, Air = api.ZoneType?.Air ?? 1;
   const mobile = units.filter((u) => u.type !== B && !catalog[u.name]?.harvester && (u.primaryWeapon || catalog[u.name]?.engineer));
-  const combat = mobile.filter((u) => !catalog[u.name]?.engineer);
+  const combat = squadUnits(units, catalog, api);
   const squads = formSquads(combat, memory);
   const enemyUnits = enemies.filter((e) => e.type !== B);
   const enemyIds = new Set(enemies.map((e) => e.id)), objectiveId = s.objectiveTarget?.id;
@@ -112,7 +115,7 @@ export function buildBrief(api, catalog, snapshot, memory) {
   const squadView = squads.map(({ id, members }) => {
     const c = centerOf(members), intent = intentOf(id);
     return { id, units: countBy(members, catalog), n: members.length, at: [c.rx, c.ry], hpPct: hpOf(members),
-      idle: members.filter((u) => u.isIdle).length, intent: intent ? `${intent.action}${intent.target !== undefined ? ' ' + intent.target : ''}${intent.x !== undefined ? ` (${intent.x},${intent.y})` : ''}` : 'none',
+      idle: members.filter((u) => u.isIdle).length, intent: intent ? `${intent.action}${intent.target !== undefined ? ' ' + intent.target : ''}${intent.x !== undefined ? ` (${intent.x},${intent.y})` : ''}${intent.auto ? ' (automatic)' : ''}${intent.targetGone ? ' (target destroyed)' : ''}` : 'none',
       underFire: pressure(members) };
   });
   const enemyGroups = clusters(enemyUnits.filter((e) => e.zone !== Air), ENEMY_GROUP_RADIUS).map((members) => {

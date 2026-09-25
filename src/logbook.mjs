@@ -44,10 +44,34 @@ export function decisionEntry({ at, tick, provider, model, latencyMs, usage, sta
   return { at, kind: 'decision', tick: number(tick), provider: short(provider, 12), model: short(model, 60), latencyMs: number(latencyMs), inputTokens: number(usage?.input_tokens), outputTokens: number(usage?.output_tokens), state: stateSummary(state), groups };
 }
 
+// Commander mode. One order as the log keeps it; both the model's orders (background) and the
+// page's execution results (event) use this shape, bounded so a long plan cannot flood storage.
+const orderLine = (o) => {
+  const out = { kind: short(o?.kind, 12) };
+  for (const k of ['squad', 'action', 'item']) if (o?.[k] != null && o[k] !== '') out[k] = short(o[k], 40);
+  for (const k of ['target', 'x', 'y', 'count', 'units', 'ordered']) if (number(o?.[k]) !== null) out[k] = o[k];
+  if (typeof o?.accepted === 'boolean') out.accepted = o.accepted;
+  if (o?.auto) out.auto = true;
+  if (o?.reason) out.reason = short(o.reason, 200);
+  if (o?.result) out.result = short(o.result, 200);
+  if (o?.why) out.why = short(o.why, 200);
+  return out;
+};
+const orderLines = (list) => (Array.isArray(list) ? list : []).slice(0, 20).map(orderLine);
+export function commandEntry({ at, tick, provider, model, latencyMs, usage, briefChars, orders, rejected }) {
+  return { at, kind: 'command', tick: number(tick), provider: short(provider, 12), model: short(model, 60), latencyMs: number(latencyMs), inputTokens: number(usage?.input_tokens), outputTokens: number(usage?.output_tokens),
+    briefChars: number(briefChars), note: short(orders?.note, 400),
+    orders: orderLines([...(orders?.squads ?? []).map((o) => ({ kind: 'squad', ...o })), ...(orders?.production ?? []).map((o) => ({ kind: 'production', ...o })), ...(orders?.engineers ?? []).map((o) => ({ kind: 'engineer', ...o }))]),
+    rejected: orderLines(rejected) };
+}
+
 export function eventEntry(e, at) {
   const kind = short(e?.kind, 24);
   const base = { at, kind, tick: number(e?.tick) };
   if (kind === 'action') return { ...base, question: short(e.question, 40), choice: short(e.choice, 60), accepted: e.accepted === true, reason: short(e.reason, 40), actionType: short(e.action?.type, 24), actionName: short(e.action?.name ?? e.action?.mode, 40), cost: number(e.action?.cost), confidence: number(e.confidence), latencyMs: number(e.latencyMs), ageTicks: number(e.ageTicks) };
+  // The page's side of a commander turn: what was executed and why not. `executed` tells it apart
+  // from the background's entry for the same turn.
+  if (kind === 'command') return { ...base, executed: true, sourceTick: number(e.sourceTick), note: short(e.note, 400), orders: orderLines(e.results), rejected: orderLines(e.rejected), auto: orderLines(e.auto) };
   if (kind === 'stale') return { ...base, currentTick: number(e.currentTick), latencyMs: number(e.latencyMs) };
   if (kind === 'start') return { ...base, maxDecisions: number(e.maxDecisions), policy: short(e.policy, 40) };
   if (kind === 'stop') return { ...base, reason: short(e.reason, 40) };
@@ -71,8 +95,9 @@ const top = (map, n = 8) => Object.fromEntries(Object.entries(map).sort(([, a], 
 // Aggregate view for the popup and the export file.
 export function logStats(entries = []) {
   const s = { entries: entries.length, from: null, to: null, sessions: 0, decisions: 0, failures: 0, stale: 0, latency: { avg: null, max: null }, usage: { inputTokens: 0, outputTokens: 0 }, fallbacks: 0, providers: {}, models: {},
-    groups: {}, actions: { total: 0, accepted: 0, skipped: 0, waits: 0, byType: {}, skippedReasons: {}, acceptedProduce: {} }, outcomes: {}, errors: 0 };
-  let latencySum = 0, latencyCount = 0;
+    groups: {}, actions: { total: 0, accepted: 0, skipped: 0, waits: 0, byType: {}, skippedReasons: {}, acceptedProduce: {} }, outcomes: {}, errors: 0,
+    commands: { count: 0, latencyAvg: null, rejected: 0, executed: 0, notExecuted: 0, autoDefense: 0 } };
+  let latencySum = 0, latencyCount = 0, commandLatency = 0, commandTimed = 0;
   for (const e of entries) {
     if (!e || typeof e !== 'object') continue;
     s.from ??= e.at; s.to = e.at;
@@ -90,6 +115,15 @@ export function logStats(entries = []) {
         stat.asked++; stat.avgOptions += g.optionCount ?? 0; stat.avgConfidence += g.confidence ?? 0;
         if (g.choice === 'wait') stat.waits++; inc(stat.choices, g.choice || '?'); if (g.fallback) s.fallbacks++;
       }
+    } else if (e.kind === 'command' && e.executed) {
+      for (const o of e.orders ?? []) o.accepted ? s.commands.executed++ : s.commands.notExecuted++;
+      s.commands.autoDefense += (e.auto ?? []).length;
+    } else if (e.kind === 'command') {
+      // A commander turn is one model request: it counts toward latency and tokens like a decision.
+      s.commands.count++; s.commands.rejected += (e.rejected ?? []).length;
+      if (e.provider) inc(s.providers, e.provider); if (e.model) inc(s.models, e.model);
+      s.usage.inputTokens += e.inputTokens ?? 0; s.usage.outputTokens += e.outputTokens ?? 0;
+      if (e.latencyMs !== null && e.latencyMs !== undefined) { latencySum += e.latencyMs; latencyCount++; commandLatency += e.latencyMs; commandTimed++; s.latency.max = Math.max(s.latency.max ?? 0, e.latencyMs); }
     } else if (e.kind === 'action') {
       s.actions.total++;
       if (e.accepted) { s.actions.accepted++; inc(s.actions.byType, e.actionType || '?'); if (e.actionType === 'produce') inc(s.actions.acceptedProduce, e.actionName || '?'); }
@@ -98,6 +132,7 @@ export function logStats(entries = []) {
     }
   }
   if (latencyCount) s.latency.avg = Math.round(latencySum / latencyCount);
+  if (commandTimed) s.commands.latencyAvg = Math.round(commandLatency / commandTimed);
   for (const stat of Object.values(s.groups)) { stat.avgOptions = Math.round(stat.avgOptions / stat.asked * 10) / 10; stat.avgConfidence = Math.round(stat.avgConfidence / stat.asked * 100) / 100; stat.waitRate = Math.round(stat.waits / stat.asked * 100); stat.choices = top(stat.choices); }
   s.actions.skippedReasons = top(s.actions.skippedReasons); s.actions.acceptedProduce = top(s.actions.acceptedProduce, 12);
   return s;

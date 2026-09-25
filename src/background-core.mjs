@@ -1,7 +1,7 @@
-import {DEFAULTS, supportedGame, apiEndpoint, originPattern, validateSettings, publicSettings, privateSettings, prepareQuestions, validateAnswer, httpError, activeProvider, authHeaders, hostAllowed, normalizeHost, sanitizeAllowedHosts, providerEndpoint, serviceUrl, PROVIDER_FIELDS} from './shared.mjs';
-import {buildChatRequest, parseChatResponse, modelIds, serviceError, refusesForcedTool} from './openai.mjs';
+import {DEFAULTS, supportedGame, apiEndpoint, originPattern, validateSettings, publicSettings, privateSettings, prepareQuestions, prepareBrief, validateAnswer, httpError, activeProvider, authHeaders, hostAllowed, normalizeHost, sanitizeAllowedHosts, providerEndpoint, serviceUrl, PROVIDER_FIELDS} from './shared.mjs';
+import {buildChatRequest, parseChatResponse, buildCommanderRequest, parseCommanderResponse, modelIds, serviceError, refusesForcedTool} from './openai.mjs';
 import {summarize,recordObservation} from './telemetry.mjs';
-import {LOG_KEY,appendEntries,decisionEntry,eventEntry,logStats} from './logbook.mjs';
+import {LOG_KEY,appendEntries,decisionEntry,commandEntry,eventEntry,logStats} from './logbook.mjs';
 
 export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = () => crypto.randomUUID()} = {}) {
   const inflight = new Map(), controlLocks = new Map(), stateLocks = new Map();
@@ -13,14 +13,19 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
   const key = tabId => `session:${tabId}`;
   // Chat models answer in seconds rather than milliseconds (reasoning models 10–25 s), so they get
   // a longer budget; the page is told to wait a little longer than the background does.
-  const timeoutFor = provider => provider.id==='openai'?30000:8000;
+  // A commander turn reads a brief of several thousand tokens and plans the whole army: 30–50 s is normal.
+  const COMMAND_TIMEOUT=90000;
+  const timeoutFor = (provider,commander=false) => commander?COMMAND_TIMEOUT:provider.id==='openai'?30000:8000;
   // One decision request to whichever provider is selected, returned in Jev's answer shape.
   // Services (by endpoint and model) that refused a forced function call; they get tool_choice "auto" from then on.
   const autoToolChoice=new Set();
-  async function callModel(provider,{state,questions},signal){
+  async function callModel(provider,{state,questions,brief},signal){
     const openai=provider.id==='openai',endpoint=providerEndpoint(provider),route=`${endpoint} ${provider.model}`;
     const send=body=>fetchImpl(endpoint,{method:'POST',headers:authHeaders(provider),body:JSON.stringify(body),signal,redirect:'error',credentials:'omit',referrerPolicy:'no-referrer'});
-    const chat=toolChoice=>buildChatRequest({model:provider.model,mode:provider.mode,state,questions,toolChoice});
+    // Commander turns go through the same transport, refusal and retry handling as choice questions.
+    const build=(toolChoice,mode=provider.mode)=>brief?buildCommanderRequest({model:provider.model,brief,toolChoice,mode}):buildChatRequest({model:provider.model,mode,state,questions,toolChoice});
+    const parse=body=>brief?parseCommanderResponse(body,brief.legal,provider.name):parseChatResponse(body,questions,provider.name);
+    const chat=toolChoice=>build(toolChoice);
     let response=await send(openai?chat(autoToolChoice.has(route)?'auto':'forced'):{model:provider.model,state,questions});
     let raw=await response.text();
     if(openai && provider.mode!=='json' && !autoToolChoice.has(route) && refusesForcedTool(response.status,serviceError(raw))){
@@ -30,16 +35,16 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
     if(raw.length>(openai?512000:256000))throw new Error(`${provider.name} 响应过大，已拒绝处理。`);
     let parsed;try{parsed=JSON.parse(raw);}catch{throw new Error(`${provider.name} 返回的内容无法解析。`);}
     if(!openai)return validateAnswer(parsed,questions,provider.name);
-    try{return parseChatResponse(parsed,questions,provider.name);}
+    try{return parse(parsed);}
     catch(e){
       // Without a forced function call some models now and then answer in prose. One retry asking for
       // a bare JSON object; a second failure counts as a normal failed request.
       if(provider.mode==='json' || !/无法解析/.test(e.message))throw e;
-      const retry=await send(buildChatRequest({model:provider.model,mode:'json',state,questions}));
+      const retry=await send(build('forced','json'));
       const text=await retry.text();
       if(!retry.ok){const detail=serviceError(text);const error=new Error(httpError(retry.status,provider.name)+(detail?` ${detail}`:''));error.status=retry.status;throw error;}
       let again;try{again=JSON.parse(text);}catch{throw e;}
-      return parseChatResponse(again,questions,provider.name);
+      return parse(again);
     }
   }
   const needsModel = provider => provider.id==='openai' && !provider.model;
@@ -84,7 +89,7 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
     const credits=history.map(p=>p.credits).filter(Number.isFinite),seconds=history.map(p=>p.gameSeconds).filter(Number.isFinite);
     const settings=await getSettings();
     const record={id:`${s.startedAt}-${tabId}-${String(s.token??'').slice(0,8)}`,startedAt:s.startedAt,endedAt:at,durationMs:at-s.startedAt,gameSeconds:seconds.length?Math.max(0,seconds.at(-1)-seconds[0]):null,
-      firstTick:s.firstTick??null,lastTick:s.lastTick??null,provider:s.provider??'jev',providerName:s.providerName??'Jev',providerKind:s.providerKind??(s.provider==='local'?'local':'cloud'),model:s.model??'',configuredModel:s.configuredModel??'',endpoint:s.endpoint??'',callMode:s.callMode??'',objective:settings.objective??'',reason:String(reason??'').slice(0,40),outcome:s.outcome||(reason==='battle_ended'?'ended':''),ledger,
+      firstTick:s.firstTick??null,lastTick:s.lastTick??null,provider:s.provider??'jev',providerName:s.providerName??'Jev',strategyMode:s.strategyMode??'choices',providerKind:s.providerKind??(s.provider==='local'?'local':'cloud'),model:s.model??'',configuredModel:s.configuredModel??'',endpoint:s.endpoint??'',callMode:s.callMode??'',objective:settings.objective??'',reason:String(reason??'').slice(0,40),outcome:s.outcome||(reason==='battle_ended'?'ended':''),ledger,
       decisions:s.decisions??0,requests:s.requests??0,failures:s.failures??0,acceptedActions:s.acceptedActions??0,waits:s.waits??0,inputTokens:s.inputTokens??0,outputTokens:s.outputTokens??0,totalTokens:(s.inputTokens??0)+(s.outputTokens??0),latencyAvg:stats.latency.avg,latencyMax:stats.latency.max,
       credits:{start:credits[0]??null,end:credits.at(-1)??null,max:credits.length?Math.max(...credits):null,min:credits.length?Math.min(...credits):null},armyMax:s.armyMax??null,
       produced:stats.actions.acceptedProduce,actionsByType:stats.actions.byType,skippedReasons:stats.actions.skippedReasons,
@@ -173,23 +178,27 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
     await c.scripting.executeScript({target:{tabId,documentIds:[documentId]},world:'MAIN',files:['page.js']});
     const status=await pageCall(tabId,'status',null,documentId);
     if(!status?.available)throw new Error(status?.error || '请先进入一场正在运行的对局，再开启托管。');
-    const session={tabId,token:uuid(),documentId,origin:new URL(tab.url).origin,provider:provider.id,providerName:provider.name,providerKind:provider.kind,endpoint:providerEndpoint(provider),configuredModel:provider.model,model:provider.model,callMode:provider.mode??'',running:true,startedAt:now(),updatedAt:now(),requests:0,decisions:0,failures:0,inputTokens:0,outputTokens:0,busyUntil:0,events:[],reason:'',error:'',maxDecisions:config.maxDecisions};
+    const session={tabId,token:uuid(),documentId,origin:new URL(tab.url).origin,provider:provider.id,providerName:provider.name,providerKind:provider.kind,endpoint:providerEndpoint(provider),configuredModel:provider.model,model:provider.model,callMode:provider.mode??'',strategyMode:provider.strategy??'choices',running:true,startedAt:now(),updatedAt:now(),requests:0,decisions:0,failures:0,inputTokens:0,outputTokens:0,busyUntil:0,events:[],reason:'',error:'',maxDecisions:config.maxDecisions};
     await patch(tabId,()=>session);
     try {
       await c.tabs.sendMessage(tabId,{type:'BIND_SESSION',token:session.token},{documentId});
-      const result=await pageCall(tabId,'start',{token:session.token,maxDecisions:config.maxDecisions,autoCamera:config.autoCamera,objective:config.objective,...(provider.id==='openai'?{maxStaleTicks:900,requestTimeoutMs:timeoutFor(provider)+5000}:{})},documentId);
+      const commander=provider.strategy==='commander';
+      const result=await pageCall(tabId,'start',{token:session.token,maxDecisions:config.maxDecisions,autoCamera:config.autoCamera,objective:config.objective,...(provider.id==='openai'?{maxStaleTicks:900,requestTimeoutMs:timeoutFor(provider,commander)+5000}:{}),...(commander?{commander:true}:{})},documentId);
       if(!result?.running)throw new Error(result?.error || '托管未能启动。');
       await badge(tabId,'ON');
-      logAppend({at:now(),kind:'session',event:'start',tabId,provider:provider.id,providerKind:provider.kind,model:provider.model,endpoint:session.endpoint,callMode:session.callMode,maxDecisions:config.maxDecisions});
+      logAppend({at:now(),kind:'session',event:'start',tabId,provider:provider.id,providerKind:provider.kind,model:provider.model,endpoint:session.endpoint,callMode:session.callMode,strategyMode:session.strategyMode,maxDecisions:config.maxDecisions});
       await notifyOverlay(await getSession(tabId));
       return result;
     } catch(e) { await stop(tabId,'start_failed');throw e; }
   }
   async function decide(message,sender) {
     const tabId=sender.tab?.id;
-    const questions=prepareQuestions(message.body);
+    const commander=message.body?.mode==='commander';
+    const brief=commander?prepareBrief(message.body):undefined,questions=commander?undefined:prepareQuestions(message.body);
     const auth=await authorize(sender,message.token);
     const config=await getSettings(),provider=activeProvider(config);
+    if(commander && provider.id!=='openai')throw new Error('指挥模式只支持「OpenAI 兼容」来源。');
+    const tick=commander?brief.tick:message.body.state.tick;
     // URL and credentials are read exclusively from trusted extension settings.
     const endpoint=providerEndpoint(provider);
     if(!hostAllowed(provider.apiBase,config.allowedHosts))throw new Error('公网明文地址需要先加入「允许的外部地址」。');
@@ -198,25 +207,30 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
       if(!s?.running || s.token!==auth.token)throw new Error('托管会话已停止。');
       if(s.busyUntil>now() || inflight.has(tabId))throw new Error('上一条决策尚未完成。');
       if(s.requests>=s.maxDecisions)throw Object.assign(new Error('已达到本局决策上限，托管已停止。'),{code:'DECISION_BUDGET'});
-      return {...s,requests:s.requests+1,busyUntil:now()+timeoutFor(provider)+4000};
+      return {...s,requests:s.requests+1,busyUntil:now()+timeoutFor(provider,commander)+4000};
     }); } catch(e) {
       if(e.code==='DECISION_BUDGET')await stop(tabId,'decision_budget');
       throw e;
     }
     const abort=new AbortController();inflight.set(tabId,abort);
-    const timeout=setTimeout(()=>abort.abort(),timeoutFor(provider)),started=now();
+    const timeout=setTimeout(()=>abort.abort(),timeoutFor(provider,commander)),started=now();
     try {
-      const result={...await callModel(provider,{state:message.body.state,questions},abort.signal),latencyMs:now()-started};
+      const result={...await callModel(provider,commander?{brief}:{state:message.body.state,questions},abort.signal),latencyMs:now()-started};
       await authorize(sender,message.token);
-      await patch(tabId,s=>s?.token===auth.token?{...s,decisions:s.decisions+1,inputTokens:s.inputTokens+result.usage.input_tokens,outputTokens:s.outputTokens+result.usage.output_tokens,latencyMs:result.latencyMs,lastTick:message.body.state.tick,firstTick:s.firstTick??message.body.state.tick,lastChoices:Object.fromEntries(Object.entries(result.answers).map(([id,a])=>[id,a.choice])),model:result.model||s.model||provider.model,error:'',updatedAt:now()}:s);
-      logAppend(decisionEntry({at:now(),tick:message.body.state.tick,provider:provider.id,model:result.model||provider.model,latencyMs:result.latencyMs,usage:result.usage,state:message.body.state,questions,answers:result.answers}));
+      await patch(tabId,s=>s?.token===auth.token?{...s,decisions:s.decisions+1,inputTokens:s.inputTokens+result.usage.input_tokens,outputTokens:s.outputTokens+result.usage.output_tokens,latencyMs:result.latencyMs,lastTick:tick,firstTick:s.firstTick??tick,
+        lastChoices:commander?{}:Object.fromEntries(Object.entries(result.answers).map(([id,a])=>[id,a.choice])),model:result.model||s.model||provider.model,error:'',updatedAt:now()}:s);
+      if(commander){
+        const {legal,...shown}=brief;
+        logAppend(commandEntry({at:now(),tick,provider:provider.id,model:result.model||provider.model,latencyMs:result.latencyMs,usage:result.usage,briefChars:JSON.stringify(shown).length,orders:result.orders,rejected:result.rejected}));
+      }
+      else logAppend(decisionEntry({at:now(),tick,provider:provider.id,model:result.model||provider.model,latencyMs:result.latencyMs,usage:result.usage,state:message.body.state,questions,answers:result.answers}));
       return result;
     } catch(e) {
       const current=await getSession(tabId);
       if(current?.running && current.token===auth.token){
         const error=e.name==='AbortError'?`${provider.name} 请求超时，请检查网络或 API 服务。`:e.status?e.message:e.message?.startsWith(provider.name)?e.message:'模型请求未完成，请检查 API 地址、网络或响应格式。';
         await patch(tabId,s=>s?.token===auth.token?{...s,failures:s.failures+1,error,updatedAt:now()}:s);
-        logAppend({at:now(),kind:'failure',tick:Number.isFinite(message.body?.state?.tick)?message.body.state.tick:null,provider:provider.id,status:e.status??null,error:String(error).slice(0,240)});
+        logAppend({at:now(),kind:'failure',tick:Number.isFinite(tick)?tick:null,...(commander?{mode:'commander'}:{}),provider:provider.id,status:e.status??null,error:String(error).slice(0,240)});
         if([401,402,403].includes(e.status))await stop(tabId,`http_${e.status}`);
         await badge(tabId,'!', '#bd5656');
         throw new Error(error);
@@ -241,6 +255,8 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
       }
       else {
         next.events=[{at:now(),kind:String(e.kind).slice(0,40),actionType:String(e.action?.type??'').slice(0,40),choice:String(e.choice??e.action?.name??'').slice(0,80),accepted:e.accepted===true,reason:String(e.reason??'').slice(0,80),text:String(e.message??e.description??e.action?.label??e.action?.name??e.choice??e.reason??e.kind).slice(0,240)},...s.events].slice(0,20);
+        // A commander turn carries several orders; each one carried out counts as an accepted action.
+        if(e.kind==='command')next.acceptedActions=(s.acceptedActions??0)+(Array.isArray(e.results)?e.results.filter(r=>r?.accepted===true).length:0);
         if(e.kind==='action'){
           if(e.accepted)next.acceptedActions=(s.acceptedActions??0)+1;
           if(e.reason==='wait')next.waits=(s.waits??0)+1;
@@ -375,7 +391,7 @@ export function createBackground(c, {fetchImpl = fetch, now = Date.now, uuid = (
       const openaiModels=Array.isArray(input.openaiModels)?input.openaiModels:input.openaiBase && input.openaiBase.trim()!==String(prior.openaiBase??DEFAULTS.openaiBase).trim()?[]:prior.openaiModels;
       const config=validateSettings({...input,apiKey,localKey,openaiKey,openaiModels},prior);
       const before=activeProvider(prior),after=activeProvider(config);
-      if(before.id!==after.id || after.apiKey!==before.apiKey || after.apiBase!==before.apiBase || after.model!==before.model || after.mode!==before.mode){for(const s of Object.values(await c.storage.session.get(null)))if(s?.running)await stop(s.tabId,'settings_changed');}
+      if(before.id!==after.id || after.apiKey!==before.apiKey || after.apiBase!==before.apiBase || after.model!==before.model || after.mode!==before.mode || after.strategy!==before.strategy){for(const s of Object.values(await c.storage.session.get(null)))if(s?.running)await stop(s.tabId,'settings_changed');}
       await c.storage.local.set({settings:config});
       await broadcastConfig(config);
       return settingsView(config);

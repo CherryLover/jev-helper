@@ -66,6 +66,11 @@ export const messages = {
  modelPlaceholder:['先点「获取模型列表」','Click “Load models” first'],modelsHint:['模型列表来自该服务的 /models 接口。填好地址和密钥后点获取。选回答快的模型：单次超过 30 秒会超时（如 deepseek-v4-pro 常要 20–75 秒，deepseek-flash 约 3 秒）。','The list comes from the service’s /models endpoint. Enter the URL and key, then load it. Pick a fast model: replies over 30 s time out (deepseek-v4-pro often takes 20–75 s, deepseek-flash about 3 s).'],
  openaiMode:['调用方式','Call style'],modeTools:['函数调用（tool call，推荐）','Function calling (tool call, recommended)'],modeJson:['JSON 输出（不支持函数调用时用）','JSON output (when function calling is unsupported)'],
  openaiModeHint:['两种方式都只允许从给出的候选里选。选错或缺项的组按「等待」处理，并在日志里标记。','Both only allow the offered options. A missing or unknown choice counts as “wait” and is flagged in the log.'],
+ strategyMode:['决策方式','Decision style'],strategy_choices:['选择题','Multiple choice'],strategy_commander:['指挥官（大模型自行决定打法）','Commander (the model plans the battle)'],
+ strategyHint:['选择题：扩展先想好几个候选，模型挑一个（和 Jev、Laya 一样）。指挥官：模型读一份战况简报（单位能力、各小队、敌方布防、上一轮结果），自己给每支小队下意图、决定造什么，扩展负责执行和还手等本能反应；约每 12 游戏秒一次，单次常要 30–60 秒，Token 用量更大。修改后会停止正在进行的托管。','Multiple choice: the extension prepares options and the model picks one (as with Jev and Laya). Commander: the model reads a battle brief (unit abilities, squads, enemy defenses, how the last orders went) and gives every squad an intent and decides production; the extension executes and keeps the reflexes such as returning fire. About every 12 game seconds; a turn often takes 30–60 s and uses more tokens. Changing it stops a running autopilot.'],
+ matchStrategy:['决策方式：{mode}','Decision style: {mode}'],event_command:['指挥','Command'],
+ logCommands:['指挥：{count} 轮 · 平均 {avg} ms · 校验拒收 {rejected} 条 · 执行 {executed} / 未执行 {notExecuted} · 自动回防 {auto} 次','Commander: {count} turns · avg {avg} ms · {rejected} orders refused by validation · executed {executed} / not {notExecuted} · automatic defense {auto}'],
+ commandsTitle:['指挥记录','Commander turns'],
  kind_cloud:['云端','Cloud'],kind_local:['本地','Local'],callMode_tools:['函数调用','function calling'],callMode_json:['JSON 输出','JSON output'],
  matchModelInfo:['模型：{kind} · {provider} · {model}{mode}','Model: {kind} · {provider} · {model}{mode}'],matchEndpoint:['请求地址：{endpoint}','Endpoint: {endpoint}'],
  matchTokens:['Token：输入 {input} · 输出 {output} · 合计 {total}（每次决策平均 {avg}）','Tokens: input {input} · output {output} · total {total} (avg {avg} per decision)'],
@@ -145,6 +150,8 @@ const errors = {
  'Jev 响应过大。':'Jev response is too large.',
  '托管已停止，本次回答不再执行。':'Autopilot stopped. This response will not execute.',
  '已达到本局决策上限，托管已停止。':'Request limit reached. Autopilot stopped.',
+ '指挥请求格式或大小无效。':'Invalid commander request format or size.',
+ '指挥模式只支持「OpenAI 兼容」来源。':'Commander mode works only with an OpenAI-compatible source.',
 };
 export function errorText(language,message){
  if(language!=='en')return message;

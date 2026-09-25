@@ -170,8 +170,20 @@ export function commanderSchema(legal = {}) {
   };
 }
 
-export function buildCommanderRequest({ model, brief, toolChoice = 'forced' }) {
+// A bare JSON object with the same fields as the issue_orders arguments, for services without
+// function calling (call style "json") and as the one retry after a prose answer.
+const COMMAND_SHAPE = { note: '<one or two sentences>', squads: [{ squad: '<squad id>', action: '<action>', target: 0, x: 0, y: 0, reason: '<short>' }],
+  production: [{ item: '<unit code>', count: 1, reason: '<short>' }], engineers: [{ action: 'capture', target: 0, reason: '<short>' }] };
+export function buildCommanderRequest({ model, brief, toolChoice = 'forced', mode = 'tools' }) {
   const { legal, ...shown } = brief;
+  if (mode === 'json') return {
+    model,
+    messages: [
+      { role: 'system', content: `${COMMANDER.replace('Answer by calling issue_orders.', '')} Reply with only one JSON object shaped like ${JSON.stringify(COMMAND_SHAPE)}, no other text. Squad actions: ${SQUAD_ACTIONS.join(', ')}; engineer actions: ${ENGINEER_ACTIONS.join(', ')}. target is used by attack / garrison / engineers, x and y by attack_move / move / hold / scout; leave out what an action does not use.` },
+      { role: 'user', content: JSON.stringify(shown) },
+    ],
+    response_format: { type: 'json_object' },
+  };
   return {
     model,
     messages: [
@@ -188,8 +200,11 @@ export function buildCommanderRequest({ model, brief, toolChoice = 'forced' }) {
 export function parseCommanderResponse(body, legal = {}, name = 'OpenAI') {
   const message = body?.choices?.[0]?.message ?? {};
   const call = message.tool_calls?.find((c) => c?.function?.name === COMMAND_TOOL) ?? message.tool_calls?.[0];
-  const data = parseObject(call?.function?.arguments ?? message.function_call?.arguments ?? textOf(message.content));
+  let data = parseObject(call?.function?.arguments ?? message.function_call?.arguments ?? textOf(message.content));
   if (!data || typeof data !== 'object') throw new Error(`${name} 返回的内容无法解析。`);
+  // Some models wrap the arguments: {"issue_orders": {...}} or {"orders": {...}}.
+  if (!['note', 'squads', 'production', 'engineers'].some((k) => k in data)) data = [data[COMMAND_TOOL], data.orders, data.arguments].find((x) => x && typeof x === 'object') ?? data;
+  if (!['note', 'squads', 'production', 'engineers'].some((k) => k in data)) throw new Error(`${name} 返回的内容无法解析。`);
   const has = (list, v) => Array.isArray(list) && list.includes(v);
   const num = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : undefined);
   const reason = (o) => (typeof o?.reason === 'string' ? o.reason.slice(0, 200) : '');

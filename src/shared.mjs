@@ -1,5 +1,6 @@
-export const DEFAULTS = /* @__PURE__ */ Object.freeze({ provider: 'jev', apiBase: 'https://api.typesafe.ai/v1', model: 'jev-latest', localBase: 'http://127.0.0.1:8742/v1', localModel: 'laya', openaiBase: 'https://api.openai.com/v1', openaiModel: '', openaiMode: 'tools', openaiModels: [], hotkey: 'Alt+Shift+J', autoCamera: true, showOverlay: true, maxDecisions: 2000, objective: '', autoReport: true, allowedHosts: [], language:'zh-CN' });
+export const DEFAULTS = /* @__PURE__ */ Object.freeze({ provider: 'jev', apiBase: 'https://api.typesafe.ai/v1', model: 'jev-latest', localBase: 'http://127.0.0.1:8742/v1', localModel: 'laya', openaiBase: 'https://api.openai.com/v1', openaiModel: '', openaiMode: 'tools', openaiModels: [], strategyMode: 'choices', hotkey: 'Alt+Shift+J', autoCamera: true, showOverlay: true, maxDecisions: 2000, objective: '', autoReport: true, allowedHosts: [], language:'zh-CN' });
 export const PROVIDERS = /* @__PURE__ */ Object.freeze({ jev: { id: 'jev', name: 'Jev', requiresKey: true }, local: { id: 'local', name: 'Laya', requiresKey: false }, openai: { id: 'openai', name: 'OpenAI', requiresKey: true } });
+export const strategyMode = value => value === 'commander' ? 'commander' : 'choices';
 export const providerId = value => value === 'local' || value === 'openai' ? value : 'jev';
 // Which stored fields each provider uses. The popup, validation and background all read this.
 export const PROVIDER_FIELDS = /* @__PURE__ */ Object.freeze({ jev: { base: 'apiBase', key: 'apiKey', model: 'model' }, local: { base: 'localBase', key: 'localKey', model: 'localModel' }, openai: { base: 'openaiBase', key: 'openaiKey', model: 'openaiModel' } });
@@ -10,8 +11,9 @@ export function activeProvider(s) {
   const id = providerId(s?.provider), p = PROVIDERS[id], f = PROVIDER_FIELDS[id];
   const apiBase = String(s?.[f.base] ?? DEFAULTS[f.base]).trim(), apiKey = String(s?.[f.key] ?? '').trim(), model = String(s?.[f.model] ?? DEFAULTS[f.model]).trim();
   let host = ''; try { host = new URL(apiBase).hostname; } catch {}
-  if (id === 'openai') return { ...p, apiBase, apiKey, model, mode: s?.openaiMode === 'json' ? 'json' : 'tools', requiresKey: !privateHost(host), kind: privateHost(host) ? 'local' : 'cloud' };
-  return { ...p, apiBase, apiKey, model, kind: id === 'local' ? 'local' : 'cloud' };
+  // Commander mode needs a chat model that reasons over a long brief; Jev and Laya always answer choice questions.
+  if (id === 'openai') return { ...p, apiBase, apiKey, model, mode: s?.openaiMode === 'json' ? 'json' : 'tools', strategy: strategyMode(s?.strategyMode), requiresKey: !privateHost(host), kind: privateHost(host) ? 'local' : 'cloud' };
+  return { ...p, apiBase, apiKey, model, strategy: 'choices', kind: id === 'local' ? 'local' : 'cloud' };
 }
 export const GAME_HOSTS = ['ra2web.github.io', 'staging.wangerhuoda.com', 'wangerhuoda.com', 'www.wangerhuoda.com'];
 export const CHANNEL = 'werhd-jev-extension-v1';
@@ -97,6 +99,7 @@ export function validateSettings(input, prior = {}) {
   s.openaiModel = String(s.openaiModel ?? '').trim();
   if (!JEV_MODEL.test(s.model) || !JEV_MODEL.test(s.localModel) || (s.openaiModel && !OPENAI_MODEL.test(s.openaiModel))) throw new Error('模型名称无效。');
   s.openaiMode = s.openaiMode === 'json' ? 'json' : 'tools';
+  s.strategyMode = strategyMode(s.strategyMode);
   s.openaiModels = (Array.isArray(s.openaiModels) ? s.openaiModels : []).filter(id => typeof id === 'string' && OPENAI_MODEL.test(id)).slice(0, 500);
   s.hotkey = normalizeHotkey(s.hotkey);
   s.maxDecisions = Number(s.maxDecisions);
@@ -146,7 +149,7 @@ export function errorField(message, provider = 'jev') {
   return '';
 }
 export const publicSettings = s => ({provider:providerId(s.provider), providerName:activeProvider(s).name, providerKind:activeProvider(s).kind, apiBase:s.apiBase, model:s.model, localBase:s.localBase??DEFAULTS.localBase, localModel:s.localModel??DEFAULTS.localModel, hasLocalKey:!!s.localKey,
-  openaiBase:s.openaiBase??DEFAULTS.openaiBase, openaiModel:s.openaiModel??'', openaiMode:s.openaiMode==='json'?'json':'tools', openaiModels:Array.isArray(s.openaiModels)?s.openaiModels:[], hasOpenaiKey:!!s.openaiKey, hotkey:s.hotkey, autoCamera:s.autoCamera, showOverlay:s.showOverlay??DEFAULTS.showOverlay, autoReport:s.autoReport!==false, allowedHosts:sanitizeAllowedHosts(s.allowedHosts), maxDecisions:s.maxDecisions, objective:s.objective??'', language:s.language??DEFAULTS.language, hasKey:!!s.apiKey});
+  openaiBase:s.openaiBase??DEFAULTS.openaiBase, openaiModel:s.openaiModel??'', openaiMode:s.openaiMode==='json'?'json':'tools', strategyMode:strategyMode(s.strategyMode), openaiModels:Array.isArray(s.openaiModels)?s.openaiModels:[], hasOpenaiKey:!!s.openaiKey, hotkey:s.hotkey, autoCamera:s.autoCamera, showOverlay:s.showOverlay??DEFAULTS.showOverlay, autoReport:s.autoReport!==false, allowedHosts:sanitizeAllowedHosts(s.allowedHosts), maxDecisions:s.maxDecisions, objective:s.objective??'', language:s.language??DEFAULTS.language, hasKey:!!s.apiKey});
 // For the extension's own popup only: the stored keys, so the form can show them masked.
 export const privateSettings = s => ({...publicSettings(s), apiKey:s.apiKey??'', localKey:s.localKey??'', openaiKey:s.openaiKey??''});
 export function prepareQuestions(body) {
@@ -158,6 +161,14 @@ export function prepareQuestions(body) {
     if (!/^[a-z_]+$/.test(id) || typeof g.instructions !== 'string' || !g.instructions || !criteria.length || criteria.length > 255 || criteria.some(([k,v])=>!k || typeof v !== 'string')) throw new Error('决策候选无效。');
     return [id,{type:'choice',instructions:g.instructions,criteria:Object.fromEntries(criteria)}];
   }));
+}
+// Commander requests carry the brief instead of decision groups; it is larger than a choice request.
+export const BRIEF_MAX_CHARS = 200000;
+export function prepareBrief(body) {
+  const brief = body?.brief;
+  if (body?.mode !== 'commander' || !brief || typeof brief !== 'object' || Array.isArray(brief) || JSON.stringify(brief).length > BRIEF_MAX_CHARS) throw new Error('指挥请求格式或大小无效。');
+  const legal = brief.legal && typeof brief.legal === 'object' && !Array.isArray(brief.legal) ? brief.legal : {};
+  return { ...brief, legal };
 }
 export function validateAnswer(result, questions, name = 'Jev') {
   const answers = {};

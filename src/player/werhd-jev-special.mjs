@@ -10,6 +10,27 @@ const idle = (unit, memory, tick) => unit.isIdle && tick - (memory.specialOrders
 const friendlyOnBridge = (api, tile) => [...api.units('self'), ...api.units('allied')]
   .some(u => u.onBridge && distance(u.tile, { rx: tile.x, ry: tile.y }) < 7);
 
+// Revealed bridges, shore near the base and sea frontiers, refreshed at most once per 120 simulation ticks.
+export function refreshInfrastructure(api, memory, base) {
+  const tick = api.tick();
+  if (!memory.infrastructure || tick - memory.infrastructure.tick >= 120) {
+    const bridges = new Map();
+    const water = [], seaFrontiers = [];
+    const { width, height } = api.map.size();
+    for (let x = 0; x < width; x++) for (let y = 0; y < height; y++) {
+      const tile = api.map.tile(x, y);
+      if (tile?.bridge) bridges.set(tile.bridge.id, { ...tile.bridge, x, y });
+      if (tile?.landType === (api.LandType?.Water ?? 7)) {
+        if (base && distance(base.tile, tile) < 24) water.push({ x, y });
+        if (x % 3 === 0 && y % 3 === 0 && [[5,0],[-5,0],[0,5],[0,-5]].some(([dx,dy]) =>
+          x+dx >= 0 && y+dy >= 0 && x+dx < width && y+dy < height && !api.map.visible(x+dx,y+dy))) seaFrontiers.push({ x, y });
+      }
+    }
+    memory.infrastructure = { tick, bridges: [...bridges.values()], water, seaFrontiers };
+  }
+  return memory.infrastructure;
+}
+
 export function specialGroups(api, catalog, snapshot, memory, groups) {
   const { units, enemies, buildings, base } = snapshot.raw;
   if (!api.order || !api.QueueType || !base) return;
@@ -39,23 +60,7 @@ export function specialGroups(api, catalog, snapshot, memory, groups) {
       placement, ...extra,
     });
   };
-  // Refresh revealed infrastructure at most once per 120 simulation ticks.
-  if (!memory.infrastructure || tick - memory.infrastructure.tick >= 120) {
-    const bridges = new Map();
-    const water = [], seaFrontiers = [];
-    const { width, height } = api.map.size();
-    for (let x = 0; x < width; x++) for (let y = 0; y < height; y++) {
-      const tile = api.map.tile(x, y);
-      if (tile?.bridge) bridges.set(tile.bridge.id, { ...tile.bridge, x, y });
-      if (tile?.landType === (api.LandType?.Water ?? 7)) {
-        if (distance(base.tile, tile) < 24) water.push({ x, y });
-        if (x % 3 === 0 && y % 3 === 0 && [[5,0],[-5,0],[0,5],[0,-5]].some(([dx,dy]) =>
-          x+dx >= 0 && y+dy >= 0 && x+dx < width && y+dy < height && !api.map.visible(x+dx,y+dy))) seaFrontiers.push({ x, y });
-      }
-    }
-    memory.infrastructure = { tick, bridges: [...bridges.values()], water, seaFrontiers };
-  }
-  const { bridges, water } = memory.infrastructure;
+  const { bridges, water } = refreshInfrastructure(api, memory, base);
   snapshot.state.infrastructure = {
     visibleGarrisons: civilians.filter((u) => u.garrison).slice(0, 8).map((u) => ({ id: u.id, tile: u.tile, ...u.garrison })),
     visibleBridgePieces: bridges.length, shoreNearBase: !!water.length,

@@ -1,4 +1,5 @@
-import { specialGroups, executeSpecial, rememberSpecial, maintainSpecial } from "./werhd-jev-special.mjs";
+import { specialGroups, executeSpecial, rememberSpecial, maintainSpecial, refreshInfrastructure, SIEGE_RANGE } from "./werhd-jev-special.mjs";
+import { buildBrief, formSquads, squadUnits } from "./werhd-jev-commander.mjs";
 import { assessStrategy, investmentGroups, chooseBuildingSite, chooseRallySite, weaponEffectiveness, effectiveness, infantryProfile, scoutScore, currentWeapon as combatWeapon, activeWeapons, canFireAt, baseThreats, ATTACK_FORCE_SIZE, ATTACK_AA_ESCORTS, vehicleOptions } from "./werhd-jev-strategy.mjs";
 import { updateCamera } from "./werhd-jev-camera.mjs";
 import { refreshCatalog, isDecoration } from "./werhd-jev-catalog.mjs";
@@ -394,6 +395,29 @@ export function stableRallySite(api, catalog, own, base, memory) {
   return memory.rally;
 }
 
+// Enemy structures seen so far, kept through the fog; a remembered position observed empty is
+// removed instead of being attacked as a ruin again and again.
+export function rememberEnemyBuildings(api, catalog, memory, enemies) {
+  memory.enemyBuildings ??= new Map();
+  for (const enemy of enemies)
+    if (enemy.type === api.ObjectType.Building && !isDecoration(catalog[enemy.name], enemy.name))
+      memory.enemyBuildings.set(enemy.id, { id: enemy.id, name: enemy.name, x: enemy.tile.rx, y: enemy.tile.ry, tick: api.tick() });
+  for (const [id, known] of memory.enemyBuildings)
+    if (api.map.visible(known.x, known.y) && !enemies.some((e) => e.id === id))
+      memory.enemyBuildings.delete(id);
+  return memory.enemyBuildings;
+}
+// The player's own objective, matched to a real building (remembered through the fog), written to
+// state.objectiveTarget for the model.
+export function objectiveState(api, catalog, memory, base, state) {
+  const objective = trackObjective(api, catalog, memory, base?.tile);
+  state.objectiveTarget = objective ? { id: objective.id, name: objective.name, label: objective.label, x: objective.x, y: objective.y, lastSeenTick: objective.lastSeen, visible: !!objective.visible, done: !!objective.done, captured: !!objective.captured }
+    : memory.objective ? { found: false, keywords: memory.objectiveKeys?.words ?? [],
+      // What the visible buildings are actually called, so an unmatched objective can be fixed from a report.
+      seen: [...new Set((api.units("hostile") ?? []).filter((u) => u.type === api.ObjectType.Building).map((u) => `${catalog[u.name]?.label ?? u.name}/${u.name}`))].slice(0, 30) } : null;
+  return objective;
+}
+
 export function candidateGroups(api, catalog, snapshot, memory) {
   const { units, buildings, army: allArmy, enemies, base } = snapshot.raw,
     state = snapshot.state;
@@ -651,19 +675,7 @@ export function candidateGroups(api, catalog, snapshot, memory) {
     );
   groups.deployment.criteria.wait =
     "Preserve current deployment if there is no useful posture change; avoid leaving an engaged GI undeployed when its deployed weapon is more effective.";
-  for (const enemy of enemies)
-    if (enemy.type === api.ObjectType.Building && !isDecoration(catalog[enemy.name], enemy.name))
-      memory.enemyBuildings.set(enemy.id, {
-        id: enemy.id,
-        name: enemy.name,
-        x: enemy.tile.rx,
-        y: enemy.tile.ry,
-        tick: api.tick(),
-      });
-  // Once a remembered position is observed empty, remove it instead of repeatedly attacking a ruin.
-  for (const [id, known] of memory.enemyBuildings)
-    if (api.map.visible(known.x, known.y) && !enemies.some((e) => e.id === id))
-      memory.enemyBuildings.delete(id);
+  rememberEnemyBuildings(api, catalog, memory, enemies);
   state.knownEnemyBuildings = [...memory.enemyBuildings.values()].map(({name,x,y,tick})=>({name,x,y,lastSeenTick:tick}));
   const tanks = army.filter((u) => u.type === api.ObjectType.Vehicle&&!catalog[u.name]?.naval&&catalog[u.name]?.category!=='AirPower');
   const support = army.filter(u=>u.type===api.ObjectType.Infantry&&u.id!==memory.scoutId&&
@@ -684,12 +696,8 @@ export function candidateGroups(api, catalog, snapshot, memory) {
   if (tooFew && readiness.ready) state.forceReadiness = { ...readiness, ready: false, reason: `only ${active.length} units are free to attack; gather at least ${MIN_ATTACK_UNITS} before striking` };
   const rallySite = stableRallySite(api, catalog, units, base, memory);
   // The player's own objective, matched to a real building (remembered through the fog).
-  const objective = trackObjective(api, catalog, memory, base?.tile);
+  const objective = objectiveState(api, catalog, memory, base, state);
   const objectiveTarget = objective && !objective.done ? objective : undefined;
-  state.objectiveTarget = objective ? { id: objective.id, name: objective.name, label: objective.label, x: objective.x, y: objective.y, lastSeenTick: objective.lastSeen, visible: !!objective.visible, done: !!objective.done, captured: !!objective.captured }
-    : memory.objective ? { found: false, keywords: memory.objectiveKeys?.words ?? [],
-      // What the visible buildings are actually called, so an unmatched objective can be fixed from a report.
-      seen: [...new Set((api.units("hostile") ?? []).filter((u) => u.type === api.ObjectType.Building).map((u) => `${catalog[u.name]?.label ?? u.name}/${u.name}`))].slice(0, 30) } : null;
   // Small local models read only the start of a question: objective and readiness go first, the
   // escalation note is one short sentence at the end.
   const where = (t) => `(${t.x},${t.y})`;
@@ -1286,11 +1294,14 @@ export function maintainBattle(api, catalog, memory, emit) {
     }
   }
   // Defenders have their own targeting; a unit falling back to regroup is not turned round.
-  respondToThreats(api, catalog, memory, emit, mobile, enemies, new Set(defending || mission?.mode === 'retreat' ? mission.ids : []));
+  // Commander mode: squads told to retreat or defend the base are not turned round by the instinct layer.
+  respondToThreats(api, catalog, memory, emit, mobile, enemies, new Set([...(defending || mission?.mode === 'retreat' ? mission.ids : []), ...(memory.instinctSkip ?? [])]));
   // Mechanics: focus on a reachable in-range enemy, without replacing the model's macro mission.
   let issued = 0;
   for (const u of [...mobile, ...naval]) {
     if (tick - (memory.postureOrders?.get(u.id) ?? -1000) < 20) continue;
+    // Commander mode: a squad on the way under "move" or "retreat" does not stop to trade shots.
+    if (memory.focusSkip?.has(u.id)) continue;
     const last = memory.orders.get(u.id);
     if (last && tick - last.tick < 18) continue;
     if (defending && mission.ids.includes(u.id)) {
@@ -1372,6 +1383,309 @@ export function maintainBattle(api, catalog, memory, emit) {
   }
 }
 
+// ---- Commander mode (docs/commander-design.md) ----
+// The model gives each squad an intent; between its turns the intents are kept up here without asking
+// it again: only new or idle members get orders, so units already fighting are not pulled away.
+// Timing: a turn every COMMAND_INTERVAL_TICKS (about 12 game seconds), sooner when something happens.
+export const COMMAND_INTERVAL_TICKS = 180, AUTO_DEFENSE_TICKS = 450, INTENT_REFRESH_TICKS = 45, ARRIVED = 3, GARRISON_RETRY_TICKS = 450, GARRISON_TRIES = 3;
+const centerOf = (members) => ({ rx: members.reduce((n, u) => n + u.tile.rx, 0) / members.length, ry: members.reduce((n, u) => n + u.tile.ry, 0) / members.length });
+const newIntent = (o, tick, extra = {}) => ({ action: o.action, target: o.target, x: o.x, y: o.y, reason: o.reason ?? "", since: tick, members: new Set(), arrived: new Set(), ...extra });
+const sameIntent = (a, o) => !!a && a.action === o.action && a.target === o.target && (o.x === undefined || a.x !== undefined && Math.hypot(a.x - o.x, a.y - o.y) < 5);
+const ledgerTotals = (memory) => { const l = memory.ledger; return { lost: (l?.ownUnitsLost ?? 0) + (l?.ownBuildingsLost ?? 0), killed: (l?.enemyUnitsDestroyed ?? 0) + (l?.enemyBuildingsDestroyed ?? 0) }; };
+const visibleTarget = (api, id) => { let all = []; try { all = [...api.units("enemy"), ...(api.units("hostile") ?? [])]; } catch { all = api.units("enemy"); } return all.find((u) => u.id === id); };
+
+// Squads are re-formed on every pass (ids stay stable by shared members). A part split off a squad
+// with an intent carries that intent on; intents of squads that no longer exist are dropped.
+export function refreshSquads(api, catalog, memory) {
+  const before = new Map(memory.squads ?? []), intents = memory.intents ??= new Map();
+  const squads = formSquads(squadUnits(api.units("self"), catalog, api), memory);
+  for (const q of squads) {
+    if (intents.has(q.id)) continue;
+    const counts = new Map();
+    for (const u of q.members) for (const [sid, ids] of before) if (intents.has(sid) && ids.includes(u.id)) counts.set(sid, (counts.get(sid) ?? 0) + 1);
+    const [from, n] = [...counts].sort((a, b) => b[1] - a[1])[0] ?? [];
+    if (from && n * 2 >= q.members.length) { const { members, arrived, ...rest } = intents.get(from); intents.set(q.id, { ...rest, members: new Set(members), arrived: new Set(arrived), splitFrom: from }); }
+  }
+  const live = new Set(squads.map((q) => q.id));
+  for (const sid of intents.keys()) if (!live.has(sid)) intents.delete(sid);
+  return squads;
+}
+
+// One pass of one intent. `first` is the turn the model gave it: then every free member is ordered;
+// afterwards only members that are new to it or idle.
+export function orderSquad(api, catalog, memory, squad, intent, first = false) {
+  const tick = api.tick(), cmd = memory.command ??= {};
+  memory.orders ??= new Map(); memory.specialOrders ??= new Map();
+  const special = (u) => tick - (memory.specialOrders.get(u.id)?.tick ?? -10000) <= 450;
+  const fled = (u) => tick - (memory.fallBack?.get(u.id)?.tick ?? -Infinity) < FALL_BACK_TICKS;
+  const free = squad.members.filter((u) => !special(u));
+  const fresh = free.filter((u) => first || !intent.members.has(u.id) || u.isIdle);
+  const far = (u, x, y, r = ARRIVED) => Math.hypot(u.tile.rx - x, u.tile.ry - y) > r;
+  const ids = (list) => list.map((u) => u.id);
+  const mark = (list, extra = {}) => { for (const u of list) { intent.members.add(u.id); memory.orders.set(u.id, { tick, intent: intent.action, ...extra }); } };
+  const done = (accepted, reason, extra = {}) => ({ accepted, ...(reason ? { reason } : {}), ...extra });
+  if (!free.length) return done(false, "squad_busy");
+  switch (intent.action) {
+    case "attack": {
+      const target = visibleTarget(api, intent.target);
+      if (target) {
+        intent.lastSeen = { x: target.tile.rx, y: target.tile.ry };
+        const list = fresh.filter((u) => !fled(u) || first);
+        const able = list.filter((u) => effectiveness(catalog[u.name], [target], catalog, api) > 0), escort = list.filter((u) => !able.includes(u));
+        if (able.length) api.attack(ids(able), target.id);
+        // Units that cannot hurt it (anti-air, for example) come along instead of standing idle.
+        if (escort.length) api.attackMove(ids(escort), target.tile.rx, target.tile.ry);
+        mark(list, { targetId: target.id });
+        return done(true, "", { units: list.length });
+      }
+      const known = memory.enemyBuildings?.get(intent.target) ?? intent.lastSeen;
+      if (!known || api.map.visible(known.x, known.y)) {
+        // Its position is in sight and it is not there: destroyed (or gone). The model is asked again.
+        if (!intent.targetGone) { intent.targetGone = tick; cmd.urgent ??= "target_destroyed"; }
+        return done(false, "target_destroyed");
+      }
+      const list = fresh.filter((u) => (!fled(u) || first) && far(u, known.x, known.y));
+      if (list.length) api.attackMove(ids(list), known.x, known.y);
+      mark(list);
+      return done(true, "", { units: list.length, remembered: true });
+    }
+    case "attack_move": case "move": {
+      const list = fresh.filter((u) => (!fled(u) || first) && far(u, intent.x, intent.y));
+      if (list.length) api[intent.action === "move" ? "move" : "attackMove"](ids(list), intent.x, intent.y);
+      mark(list);
+      return done(true, "", { units: list.length });
+    }
+    case "hold": {
+      // Walk to the point; once there, no more orders: they hold and fight whatever comes.
+      for (const u of free) if (!far(u, intent.x, intent.y)) intent.arrived.add(u.id);
+      const list = fresh.filter((u) => !intent.arrived.has(u.id) && (!fled(u) || first));
+      if (list.length) api.move(ids(list), intent.x, intent.y);
+      mark(list);
+      return done(true, "", { units: list.length });
+    }
+    case "retreat": {
+      const own = api.units("self"), buildings = own.filter((u) => u.type === api.ObjectType.Building);
+      const site = stableRallySite(api, catalog, own, buildings.find((u) => catalog[u.name]?.yard) ?? buildings[0], memory);
+      if (!site) return done(false, "no_rally_point");
+      const list = fresh.filter((u) => far(u, site.x, site.y, 4));
+      if (list.length) api.move(ids(list), site.x, site.y);
+      mark(list);
+      return done(true, "", { units: list.length, x: site.x, y: site.y });
+    }
+    case "scout": {
+      let scout = free.find((u) => u.id === intent.scoutId);
+      if (!scout) { scout = [...free].sort((a, b) => (catalog[b.name]?.speed ?? 0) - (catalog[a.name]?.speed ?? 0))[0]; intent.scoutId = scout.id; }
+      if ((first || scout.isIdle || !intent.members.has(scout.id)) && far(scout, intent.x, intent.y)) { api.move([scout.id], intent.x, intent.y); mark([scout]); }
+      return done(true, "", { units: 1, scoutId: scout.id });
+    }
+    case "defend_base": {
+      const own = api.units("self"), buildings = own.filter((u) => u.type === api.ObjectType.Building);
+      const threats = baseThreats(api, catalog, buildings, api.units("enemy"));
+      if (threats.length) {
+        const list = fresh;
+        if (!list.length) return done(true, "", { units: 0 });
+        const execution = executeCandidate(api, { type: "mission", mode: "defend", ids: ids(list), targetId: threats[0].id }, catalog);
+        for (const id of execution.undeployIds ?? []) memory.postureOrders?.set(id, tick);
+        mark(list.filter((u) => execution.ids?.includes(u.id)), { defense: true });
+        return done(!!execution.accepted, execution.accepted ? "" : execution.reason, { units: execution.ids?.length ?? 0 });
+      }
+      const site = stableRallySite(api, catalog, own, buildings.find((u) => catalog[u.name]?.yard) ?? buildings[0], memory);
+      const list = site ? fresh.filter((u) => far(u, site.x, site.y, 5)) : [];
+      if (list.length) api.move(ids(list), site.x, site.y);
+      mark(list);
+      return done(true, "", { units: list.length, idle: true });
+    }
+    case "garrison": return garrisonSquad(api, catalog, memory, squad, intent, free, first);
+  }
+  return done(false, "unknown_action");
+}
+
+// Infantry that can enter, closest to the house first, no more than it has room for. The rest of the
+// squad stays where it is: it must not charge the defense the house is meant to take.
+function garrisonSquad(api, catalog, memory, squad, intent, free, first) {
+  const tick = api.tick(), house = api.unit?.(intent.target);
+  if (!house?.garrison?.canOccupy) return { accepted: false, reason: "house_gone" };
+  const pending = (memory.specialTasks ?? []).filter((t) => t.action?.kind === "garrison" && t.action.targetId === house.id).reduce((n, t) => n + t.action.ids.filter((id) => !house.garrison.unitIds?.includes(id)).length, 0);
+  const room = house.garrison.capacity - house.garrison.count - pending;
+  const retry = first || (!pending && (intent.tries ?? 0) < GARRISON_TRIES && tick - (intent.triedAt ?? -Infinity) >= GARRISON_RETRY_TICKS);
+  const crew = room > 0 && retry ? free.filter((u) => u.type === api.ObjectType.Infantry && catalog[u.name]?.occupier)
+    .sort((a, b) => distance(a.tile, house.tile) - distance(b.tile, house.tile)).slice(0, room) : [];
+  if (first && api.OrderType?.Stop !== undefined) {
+    const stay = free.filter((u) => !crew.includes(u));
+    if (stay.length) api.order(stay.map((u) => u.id), { type: api.OrderType.Stop });
+  }
+  if (room <= 0) return pending ? { accepted: true, units: 0, entering: true } : { accepted: false, reason: "house_full" };
+  if (!retry) return { accepted: pending > 0, units: 0 };
+  if (!crew.length) return { accepted: false, reason: "no_infantry_can_garrison" };
+  // Next to an enemy defense it is a siege: the crew leaves once that defense is gone.
+  const defense = api.units("enemy").filter((e) => e.type === api.ObjectType.Building && activeWeapons(e, catalog).some((w) => (w.damage ?? 0) > 0 && w.ag !== false) && distance(e.tile, house.tile) <= SIEGE_RANGE)
+    .sort((a, b) => distance(a.tile, house.tile) - distance(b.tile, house.tile))[0];
+  const action = { type: "special", kind: "garrison", ids: crew.map((u) => u.id), targetId: house.id, order: { type: api.OrderType.Occupy, target: { objectId: house.id } },
+    purpose: defense ? "siege" : "forward", ...(defense ? { defenseId: defense.id } : {}) };
+  intent.tries = (intent.tries ?? 0) + 1; intent.triedAt = tick;
+  const execution = executeSpecial(api, action);
+  if (!execution?.accepted) return { accepted: false, reason: execution?.reason ?? "garrison_rejected" };
+  rememberSpecial(memory, action, execution, tick);
+  for (const id of action.ids) { memory.specialOrders.set(id, { tick, kind: "garrison" }); intent.members.add(id); }
+  return { accepted: true, units: crew.length, purpose: action.purpose };
+}
+
+// Which production queue offers this item.
+function queueOffering(api, name) {
+  for (const q of Object.values(api.QueueType ?? {}).filter(Number.isInteger)) {
+    let offers = []; try { offers = api.production.available(q) ?? []; } catch { offers = []; }
+    if (offers.some((i) => i.name === name)) return q;
+  }
+  return undefined;
+}
+export function executeProduction(api, catalog, memory, order) {
+  const queueType = queueOffering(api, order.item), r = catalog[order.item] ?? {}, cost = r.cost ?? 0, credits = api.me().credits ?? 0;
+  if (queueType === undefined) return { accepted: false, reason: "not_producible" };
+  const queue = api.production.queues().find((q) => q.type === queueType);
+  const structure = [api.QueueType.Structures, api.QueueType.Armory].includes(queueType);
+  if (structure) {
+    if (queue?.size > 0) return { accepted: false, reason: "queue_busy" };
+    if (credits < cost) return { accepted: false, reason: "insufficient_credits" };
+    // Where it goes is decided here, as for every other building; placement happens when it is ready.
+    const site = api.canPlace ? chooseBuildingSite(api, catalog, order.item, api.units("self"), memory, 500) : undefined;
+    if (api.canPlace && !site) return { accepted: false, reason: "no_building_site" };
+    api.produce(order.item);
+    if (site) (memory.plannedSites ??= new Map()).set(order.item, site);
+    memory.spentCredits = (memory.spentCredits ?? 0) + cost;
+    return { accepted: true, count: 1, ...(site ? { x: site.x, y: site.y } : {}) };
+  }
+  if (queue && Number.isFinite(queue.maxSize) && queue.size >= queue.maxSize) return { accepted: false, reason: "queue_full" };
+  const affordable = cost > 0 ? Math.min(order.count ?? 1, Math.floor(credits / cost)) : order.count ?? 1;
+  if (affordable < 1) return { accepted: false, reason: "insufficient_credits" };
+  const count = Number.isFinite(queue?.maxSize) ? Math.min(affordable, queue.maxSize - queue.size) : affordable;
+  api.produce(order.item, count);
+  memory.spentCredits = (memory.spentCredits ?? 0) + cost * count;
+  return { accepted: true, count, ...(count < (order.count ?? 1) ? { reason: count < affordable ? "queue_limited" : "credits_limited" } : {}) };
+}
+
+export function executeEngineer(api, catalog, memory, order) {
+  const tick = api.tick(), target = api.unit?.(order.target);
+  if (!target) return { accepted: false, reason: "target_no_longer_visible" };
+  memory.specialOrders ??= new Map();
+  const engineer = api.units("self").filter((u) => catalog[u.name]?.engineer && u.isIdle && tick - (memory.specialOrders.get(u.id)?.tick ?? -10000) > 450)
+    .sort((a, b) => distance(a.tile, target.tile) - distance(b.tile, target.tile))[0];
+  if (!engineer) return { accepted: false, reason: "no_idle_engineer" };
+  const capture = order.action === "capture";
+  const action = { type: "special", kind: capture ? "capture" : "repair_bridge", ids: [engineer.id], targetId: target.id, order: { type: capture ? api.OrderType.Capture : api.OrderType.Repair, target: { objectId: target.id } } };
+  const execution = executeSpecial(api, action);
+  if (!execution?.accepted) return { accepted: false, reason: execution?.reason ?? "rejected" };
+  rememberSpecial(memory, action, execution, tick);
+  memory.specialOrders.set(engineer.id, { tick, kind: action.kind });
+  (memory.specialTargets ??= new Map()).set(`repair_${target.id}`, tick);
+  return { accepted: true, engineer: engineer.id };
+}
+
+// Which units the instinct layer leaves alone this pass (see maintainBattle).
+function instinctSets(memory, squads) {
+  const skip = new Set(), focus = new Set();
+  for (const q of squads) {
+    const intent = memory.intents.get(q.id);
+    if (!intent) continue;
+    if (["retreat", "defend_base"].includes(intent.action)) for (const u of q.members) skip.add(u.id);
+    if (["retreat", "move"].includes(intent.action) || intent.action === "scout")
+      for (const u of q.members) if ((intent.action !== "scout" || u.id === intent.scoutId) && (intent.x === undefined || Math.hypot(u.tile.rx - intent.x, u.tile.ry - intent.y) > ARRIVED)) focus.add(u.id);
+  }
+  memory.instinctSkip = skip; memory.focusSkip = focus;
+}
+
+// Between model turns: re-form squads, keep every intent going, watch for what should bring the next
+// turn forward, and defend the base if the model has not done so in time.
+export function maintainCommand(api, catalog, memory, emit, force = false) {
+  const tick = api.tick(), cmd = memory.command ??= {};
+  if (!force && tick - (cmd.maintainedAt ?? -Infinity) < INTENT_REFRESH_TICKS) return;
+  cmd.maintainedAt = tick;
+  const own = api.units("self"), enemies = api.units("enemy"), buildings = own.filter((u) => u.type === api.ObjectType.Building);
+  const base = buildings.find((u) => catalog[u.name]?.yard) ?? buildings[0];
+  rememberEnemyBuildings(api, catalog, memory, enemies);
+  trackObjective(api, catalog, memory, base?.tile);
+  const squads = refreshSquads(api, catalog, memory), intents = memory.intents;
+  const urgent = (why) => { cmd.urgent ??= why; };
+  const attacked = baseThreats(api, catalog, buildings, enemies).length > 0;
+  if (attacked && !cmd.baseAttacked) { urgent("base_attacked"); cmd.attackSince = tick; cmd.autoDefended = false; }
+  if (!attacked) cmd.attackSince = undefined;
+  cmd.baseAttacked = attacked;
+  if (memory.enemyBuildings?.size && !cmd.sawEnemyBase) { cmd.sawEnemyBase = true; urgent("enemy_base_found"); }
+  if (memory.objectiveTarget && !memory.objectiveTarget.done && !cmd.sawObjective) { cmd.sawObjective = true; urgent("objective_found"); }
+  // More than half of a squad's members at the last turn are dead. Infantry inside a house or a
+  // transport is not in the unit list but is not lost either.
+  let hostile = []; try { hostile = api.units("hostile") ?? []; } catch { hostile = []; }
+  const alive = new Set([...own.map((u) => u.id), ...[...own, ...hostile].flatMap((u) => [...(u.garrison?.unitIds ?? []), ...(u.transport?.unitIds ?? [])])]);
+  for (const [sid, ids] of cmd.squadsAtTurn ?? []) {
+    if (ids.length < 2 || cmd.lossReported?.has(sid)) continue;
+    if (ids.filter((id) => !alive.has(id)).length * 2 > ids.length) { (cmd.lossReported ??= new Set()).add(sid); urgent("squad_losses"); }
+  }
+  if (attacked && squads.length && !cmd.autoDefended && tick - cmd.attackSince >= AUTO_DEFENSE_TICKS && ![...intents.values()].some((i) => i.action === "defend_base")) {
+    const q = [...squads].sort((a, b) => distance(centerOf(a.members), base.tile) - distance(centerOf(b.members), base.tile))[0];
+    intents.set(q.id, newIntent({ action: "defend_base", reason: "automatic: base under attack with no defend_base order" }, tick, { auto: true }));
+    cmd.autoDefended = true;
+    const note = { kind: "squad", squad: q.id, action: "defend_base", auto: true, accepted: true, tick, result: `自动回防：基地受攻击 ${tick - cmd.attackSince} 拍，模型未安排回防 (automatic defend_base)` };
+    ((memory.lastPlanReport ??= { tick, orders: [] }).auto ??= []).push(note);
+    emit({ kind: "command", tick, auto: [note], results: [], rejected: [], note: "", description: `自动回防：${q.id}（${q.members.length} 个单位）回防基地`, choice: `auto ${q.id} defend_base` });
+  }
+  for (const q of squads) {
+    const intent = intents.get(q.id);
+    if (intent && !intent.targetGone) orderSquad(api, catalog, memory, q, intent, false);
+  }
+  instinctSets(memory, squads);
+}
+
+// Turns what happened since the last turn into the brief's "lastPlan": units left per squad, the
+// attack targets' health, our losses and kills since then.
+export function refreshPlanReport(api, memory) {
+  const r = memory.lastPlanReport;
+  if (!r) return r;
+  const alive = new Set(api.units("self").map((u) => u.id)), now = ledgerTotals(memory);
+  for (const o of r.orders ?? []) {
+    if (o.kind !== "squad") continue;
+    o.nowUnits = (memory.squads?.get(o.squad) ?? []).filter((id) => alive.has(id)).length;
+    if (o.action === "attack") {
+      const t = visibleTarget(api, o.target);
+      o.targetNow = t ? `${Math.round(t.hitPoints ?? 0)}/${Math.round(t.maxHitPoints ?? 0)}` : memory.enemyBuildings?.has(o.target) ? "not visible" : "destroyed or gone";
+    }
+  }
+  if (r.ledger) r.sinceThen = { lost: now.lost - r.ledger.lost, killed: now.killed - r.ledger.killed };
+  return r;
+}
+
+// The model's orders, carried out: squad intents, production, engineers. Returns one result per order.
+export function applyOrders(api, catalog, memory, emit, reply, sourceTick) {
+  const tick = api.tick(), orders = reply?.orders ?? {}, intents = memory.intents ??= new Map(), cmd = memory.command ??= {};
+  rememberEnemyBuildings(api, catalog, memory, api.units("enemy"));
+  const squads = refreshSquads(api, catalog, memory), byId = new Map(squads.map((q) => [q.id, q]));
+  const results = [];
+  // units: the squad's size at the order; ordered: how many were actually sent this time.
+  const line = (o, r) => { const { reason, units, ...rest } = r; results.push({ ...o, ...rest, ...(units !== undefined ? { ordered: units } : {}), accepted: !!r.accepted, ...(reason ? { reason } : {}) }); };
+  for (const o of orders.squads ?? []) {
+    const base = { kind: "squad", squad: o.squad, action: o.action, ...(o.target !== undefined ? { target: o.target } : {}), ...(o.x !== undefined ? { x: o.x, y: o.y } : {}), ...(o.reason ? { why: o.reason } : {}) };
+    const q = byId.get(o.squad);
+    if (!q) { line(base, { accepted: false, reason: "squad_gone" }); continue; }
+    // The same intent again keeps its members and clock: only new or idle members are ordered.
+    const old = intents.get(q.id), keep = sameIntent(old, o) && !old.targetGone;
+    const intent = keep ? Object.assign(old, { reason: o.reason ?? old.reason, auto: false }) : newIntent(o, tick);
+    intents.set(q.id, intent);
+    const r = orderSquad(api, catalog, memory, q, intent, !keep);
+    line({ ...base, units: q.members.length }, keep ? { ...r, continues: true } : r);
+  }
+  const why = (o) => (o.reason ? { why: o.reason } : {});
+  for (const o of orders.production ?? []) line({ kind: "production", item: o.item, count: o.count, ...why(o) }, executeProduction(api, catalog, memory, o));
+  for (const o of orders.engineers ?? []) line({ kind: "engineer", action: o.action, target: o.target, ...why(o) }, executeEngineer(api, catalog, memory, o));
+  instinctSets(memory, squads);
+  cmd.maintainedAt = tick;
+  const brief = (o) => ({ kind: o.kind, ...(o.squad ? { squad: o.squad } : {}), ...(o.action ? { action: o.action } : {}), ...(o.item ? { item: o.item, count: o.count } : {}),
+    ...(o.target !== undefined ? { target: o.target } : {}), ...(o.x !== undefined ? { x: o.x, y: o.y } : {}), ...(o.units !== undefined && o.kind === "squad" ? { unitsAtOrder: o.units } : {}),
+    result: o.accepted ? (o.continues ? "accepted (continuing)" : "accepted") : `not executed: ${o.reason}` });
+  // An automatic defense taken while this reply was on its way has not been shown to the model yet.
+  const unseen = (memory.lastPlanReport?.auto ?? []).filter((a) => a.tick > sourceTick);
+  memory.lastPlanReport = { tick, sourceTick, note: String(orders.note ?? "").slice(0, 400), orders: results.map(brief),
+    rejected: (reply?.rejected ?? []).slice(0, 20), ...(unseen.length ? { auto: unseen } : {}), ledger: ledgerTotals(memory) };
+  return results;
+}
+
 export async function attachJevPlayer(api, options = {}) {
   if (!api) throw new Error("Enter a battle before attaching Jev.");
   const requestDecision = options.requestDecision;
@@ -1381,6 +1695,8 @@ export async function attachJevPlayer(api, options = {}) {
   refreshCatalog(api, catalog);
   const maxDecisions = options.maxDecisions ?? 600,
     maxStaleTicks = options.maxStaleTicks ?? 180;
+  // Commander mode: the model plans from a brief (OpenAI-compatible sources only; the background decides).
+  const commander = options.commander === true;
   const memory = {
     autoCamera: options.autoCamera !== false,
     objective: typeof options.objective === "string" ? options.objective.trim().slice(0, 300) : "",
@@ -1483,6 +1799,7 @@ export async function attachJevPlayer(api, options = {}) {
         stop("victory");
         return;
       }
+      if (commander) maintainCommand(api, catalog, memory, emit);
       maintainBattle(api, catalog, memory, emit);
       placeReadyBuilding(api, catalog, memory, emit);
       updateCamera(api, catalog, memory, emit);
@@ -1659,6 +1976,49 @@ export async function attachJevPlayer(api, options = {}) {
         decisionTimer = setTimeout(decide, decideInterval());
     }
   };
+  // Commander turn: the first at once, then every COMMAND_INTERVAL_TICKS or sooner when maintainCommand
+  // flagged something urgent; never while a request is out (status.busy keeps runDue away).
+  const command = async () => {
+    if (!status.running) return;
+    lastDecideAt = performance.now();
+    try {
+      const tick = api.tick(), cmd = memory.command ??= {};
+      const why = cmd.lastTick === undefined ? "first" : cmd.urgent ?? (tick - cmd.lastTick >= COMMAND_INTERVAL_TICKS ? "interval" : "");
+      if (!why) return;
+      if (status.decisions >= maxDecisions) { stop("decision_budget"); return; }
+      const snap = collectState(api, catalog);
+      rememberEnemyBuildings(api, catalog, memory, snap.raw.enemies);
+      if (snap.raw.base) refreshInfrastructure(api, memory, snap.raw.base);
+      objectiveState(api, catalog, memory, snap.raw.base, snap.state);
+      refreshPlanReport(api, memory);
+      const brief = { ...buildBrief(api, catalog, snap, memory), trigger: why };
+      cmd.lastTick = tick; cmd.urgent = undefined;
+      // Seen before this turn: only something new brings the next turn forward.
+      cmd.sawEnemyBase ||= memory.enemyBuildings.size > 0; cmd.sawObjective ||= !!(memory.objectiveTarget && !memory.objectiveTarget.done);
+      cmd.baseAttacked = snap.state.baseUnderAttack; if (cmd.baseAttacked) cmd.attackSince ??= tick; cmd.squadsAtTurn = new Map(memory.squads ?? []); cmd.lossReported = new Set();
+      status.busy = true;
+      const started = performance.now();
+      const result = await requestDecision({ mode: "commander", brief }, { signal: controller.signal });
+      status.decisions++;
+      status.last = { tick, ...result };
+      if (!status.running) return;
+      const results = applyOrders(api, catalog, memory, emit, result, tick);
+      status.accepted += results.filter((r) => r.accepted).length;
+      status.rejected += results.filter((r) => !r.accepted).length + (result.rejected?.length ?? 0);
+      const text = (r) => `${r.kind === "production" ? `${r.item}×${r.count ?? 1}` : r.kind === "engineer" ? `${r.action} #${r.target}` : `${r.squad} ${r.action}${r.target !== undefined ? " #" + r.target : ""}${r.x !== undefined ? ` (${r.x},${r.y})` : ""}`} ${r.accepted ? "✓" : "✗ " + r.reason}`;
+      const summary = [...results.map(text), ...(result.rejected ?? []).map((r) => `${r.squad ?? r.item ?? r.action ?? r.kind} ✗ ${r.reason}`)].join("; ");
+      emit({ kind: "command", tick: api.tick(), sourceTick: tick, trigger: why, latencyMs: result.latencyMs, roundTripMs: Math.round(performance.now() - started), note: result.orders?.note ?? "",
+        results, rejected: result.rejected ?? [], auto: [], choice: summary.slice(0, 80), description: `指挥：${summary || "无新命令"}${result.orders?.note ? " — " + result.orders.note : ""}` });
+    } catch (e) {
+      if (/outside a running battle/.test(e.message)) { stop("battle_ended"); return; }
+      if (status.running) { status.failures++; emit({ kind: "error", message: e.message }); }
+      if (status.failures >= 5) stop("repeated_errors");
+    } finally {
+      status.busy = false;
+      if (status.running) decisionTimer = setTimeout(loop, decideInterval());
+    }
+  };
+  const loop = commander ? command : decide;
   // Page timers are throttled to once a minute in a hidden tab while the simulation keeps running.
   // The game's own tick callback is not, so every tick wakes the loops when a timer is overdue.
   // The callback itself stays trivial (the game disables handlers that exceed ~8 ms).
@@ -1670,7 +2030,7 @@ export async function attachJevPlayer(api, options = {}) {
     if (!status.running) return;
     const now = performance.now();
     if (!options.disableMicro && now - lastMicroAt >= microEvery) { clearTimeout(microTimer); micro(); }
-    if (!status.busy && now - lastDecideAt >= (options.wakeIntervalMs ?? decideInterval())) { clearTimeout(decisionTimer); decide(); }
+    if (!status.busy && now - lastDecideAt >= (options.wakeIntervalMs ?? decideInterval())) { clearTimeout(decisionTimer); loop(); }
   };
   if (typeof api.onTick === "function" && !options.disableTickWake) {
     try {
@@ -1678,8 +2038,8 @@ export async function attachJevPlayer(api, options = {}) {
       tickDriven = true;
     } catch { tickDriven = false; }
   }
-  emit({ kind: "start", tick: api.tick(), maxDecisions, policy: "v8.8.15-tactics-wait", tickDriven });
+  emit({ kind: "start", tick: api.tick(), maxDecisions, policy: commander ? "commander-v1" : "v8.8.15-tactics-wait", tickDriven });
   if (!options.disableMicro) microTimer = setTimeout(micro, 0);
-  decisionTimer = setTimeout(decide, 0);
+  decisionTimer = setTimeout(loop, 0);
   return { status, stop, catalog, memory, setAutoCamera: (enabled) => { memory.autoCamera = !!enabled; } };
 }

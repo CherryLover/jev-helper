@@ -2,7 +2,7 @@ import {attachJevPlayer} from './player/werhd-jev-player.mjs';
 import {CHANNEL} from './shared.mjs';
 import {createObserver} from './observer.mjs';
 
-const VERSION='0.6.1';
+const VERSION='0.7.0';
 if(window.__werhdJevExtension?.version!==VERSION){
   window.__werhdJevExtension?.dispose?.();
   let player,token='',api;
@@ -54,7 +54,7 @@ if(window.__werhdJevExtension?.version!==VERSION){
         return {pageTitle:String(document.title).slice(0,120),url:(location.origin+location.pathname+location.hash).slice(0,300),me:{name:String(me?.name??'').slice(0,40),country:me?.country?String(me.country).slice(0,24):undefined},players,playerCount:players.filter(p=>p.combatant&&!p.isObserver).length,opponents:players.filter(p=>!p.allied&&p.combatant&&!p.isObserver).length,map:api.map?.size?.(),startTick:api.tick(),startTime:api.time()};
       }catch{return null;}})();
       if(meta)post({type:'EVENT',event:{kind:'meta',...meta}});
-      player=await attachJevPlayer(api,{maxDecisions:options.maxDecisions,autoCamera:options.autoCamera,objective:options.objective,...(Number.isInteger(options.maxStaleTicks)?{maxStaleTicks:options.maxStaleTicks}:{}),requestDecision,onEvent:event=>{
+      player=await attachJevPlayer(api,{maxDecisions:options.maxDecisions,autoCamera:options.autoCamera,objective:options.objective,commander:options.commander===true,...(Number.isInteger(options.maxStaleTicks)?{maxStaleTicks:options.maxStaleTicks}:{}),requestDecision,onEvent:event=>{
         post({type:'EVENT',event});
       }});
       return {running:true};

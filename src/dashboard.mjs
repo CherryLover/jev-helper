@@ -54,6 +54,7 @@ function renderDetail(){
  $('m-duration').textContent=fmtDuration(m.durationMs);$('m-decisions').textContent=format(m.decisions);$('m-credits').textContent=format(m.credits?.end);$('m-army').textContent=format(m.armyMax);
  const facts=$('facts');facts.replaceChildren();
  line(facts,tr('matchModelInfo',{kind:kindText(m),provider:m.providerName||'Jev',model:m.model||m.configuredModel||'—',mode:m.callMode?` · ${tr(m.callMode==='json'?'callMode_json':'callMode_tools')}`:''}));
+ line(facts,tr('matchStrategy',{mode:tr(m.strategyMode==='commander'?'strategy_commander':'strategy_choices')}));
  if(m.endpoint)line(facts,tr('matchEndpoint',{endpoint:m.endpoint}));
  line(facts,tr('matchTokens',{input:format(m.inputTokens??0),output:format(m.outputTokens??0),total:format(tokensOf(m)),avg:m.decisions?format(tokensOf(m)/m.decisions):'—'}));
  line(facts,tr('matchFacts',{provider:m.providerName||'Jev',model:m.model||'—',requests:m.requests,failures:m.failures,avg:m.latencyAvg??'—',game:m.gameSeconds!=null?fmtDuration(m.gameSeconds*1000):'—'}));
@@ -71,16 +72,20 @@ function renderDetail(){
  renderLog();
 }
 const KEY_KINDS=new Set(['session','start','stop','outcome','failure','error','place','meta']);
+// One commander order in a line: what was ordered and, on the page's entry, whether it was carried out.
+const orderText=o=>`${o.kind==='production'?`${o.item}×${o.count??1}`:o.kind==='engineer'?`${o.action} #${o.target}`:`${o.squad} ${o.action}${o.target!=null?' #'+o.target:''}${o.x!=null?` (${o.x},${o.y})`:''}`}${o.accepted===true?' ✓':o.accepted===false?` ✗ ${o.reason??''}`:''}${o.auto?' auto':''}${o.why?`「${o.why}」`:''}`;
+const rejectedText=list=>(list??[]).length?`✗ ${list.map(r=>`${r.squad??r.item??r.action??r.kind} ${r.reason??''}`).join('; ')}`:'';
+const commandText=e=>[e.note,[...(e.orders??[]),...(e.auto??[])].map(orderText).join('; '),rejectedText(e.rejected)].filter(Boolean).join(' ｜ ');
 function renderLog(){
  const tl=$('timeline');tl.replaceChildren();
- for(const e of detailLog.filter(e=>KEY_KINDS.has(e.kind)||(e.kind==='action'&&(e.auto||e.reason==='auto_explore'))).slice(0,200)){
+ for(const e of detailLog.filter(e=>KEY_KINDS.has(e.kind)||(e.kind==='command'&&e.executed)||(e.kind==='action'&&(e.auto||e.reason==='auto_explore'))).slice(0,200)){
   const li=document.createElement('li'),b=document.createElement('b'),span=document.createElement('span');b.textContent=e.tick!=null?`#${format(e.tick)}`:new Date(e.at).toLocaleTimeString(language,{hour12:false});
-  span.textContent=e.kind==='session'?`${e.event} · ${e.provider??''} ${e.model??''} ${e.reason??''}`.trim():e.kind==='action'?`auto ${e.choice}`:e.kind==='failure'?`${tr('failures',{n:1})} · ${e.error??''}`:e.kind==='outcome'?`${tr('event_outcome')} · ${e.result}`:e.kind==='stop'?`${tr('event_stop')} · ${messages[e.reason]?tr(e.reason):e.reason??''}`:e.kind==='meta'?`meta · ${e.pageTitle??''}`:e.kind==='place'?`${tr('event_place')} · ${e.name??''}`:`${e.kind} · ${e.message??e.text??e.policy??''}`;
+  span.textContent=e.kind==='command'?`${tr('event_command')} · ${commandText(e)}`:e.kind==='session'?`${e.event} · ${e.provider??''} ${e.model??''} ${e.reason??''}`.trim():e.kind==='action'?`auto ${e.choice}`:e.kind==='failure'?`${tr('failures',{n:1})} · ${e.error??''}`:e.kind==='outcome'?`${tr('event_outcome')} · ${e.result}`:e.kind==='stop'?`${tr('event_stop')} · ${messages[e.reason]?tr(e.reason):e.reason??''}`:e.kind==='meta'?`meta · ${e.pageTitle??''}`:e.kind==='place'?`${tr('event_place')} · ${e.name??''}`:`${e.kind} · ${e.message??e.text??e.policy??''}`;
   li.append(b,span);tl.append(li);
  }
- const rows=$('decision-rows');rows.replaceChildren();const decisions=detailLog.filter(e=>e.kind==='decision');const LIMIT=300;
+ const rows=$('decision-rows');rows.replaceChildren();const decisions=detailLog.filter(e=>e.kind==='decision'||(e.kind==='command'&&!e.executed));const LIMIT=300;
  $('decisions-hint').textContent=tr('decisionsHint',{n:Math.min(LIMIT,decisions.length)});
- for(const d of decisions.slice(0,LIMIT)){const row=document.createElement('tr');row.style.cursor='default';const choices=Object.entries(d.groups??{}).map(([id,g])=>`${id}=${g.choice}${g.fallback?'*':''}${g.confidence!=null?` (${Math.round(g.confidence*100)}%)`:''}${g.reason?`「${g.reason}」`:''}`).join('  ');for(const [text,cls] of [[format(d.tick),'num'],[choices,''],[d.latencyMs!=null?`${format(d.latencyMs)} ms`:'—','num']]){const td=document.createElement('td');td.textContent=text;td.className=cls;if(!cls)td.style.whiteSpace='normal';row.append(td);}rows.append(row);}
+ for(const d of decisions.slice(0,LIMIT)){const row=document.createElement('tr');row.style.cursor='default';const choices=d.kind==='command'?`${tr('event_command')} · ${[d.note,(d.orders??[]).map(o=>`${orderText(o)}${o.reason?`「${o.reason}」`:''}`).join('  '),rejectedText(d.rejected)].filter(Boolean).join(' ｜ ')}`:Object.entries(d.groups??{}).map(([id,g])=>`${id}=${g.choice}${g.fallback?'*':''}${g.confidence!=null?` (${Math.round(g.confidence*100)}%)`:''}${g.reason?`「${g.reason}」`:''}`).join('  ');for(const [text,cls] of [[format(d.tick),'num'],[choices,''],[d.latencyMs!=null?`${format(d.latencyMs)} ms`:'—','num']]){const td=document.createElement('td');td.textContent=text;td.className=cls;if(!cls)td.style.whiteSpace='normal';row.append(td);}rows.append(row);}
 }
 async function select(id){
  selected=id;renderList();
@@ -100,6 +105,7 @@ function renderLogStats(data){
  line(tr('logSummary',{entries:s.entries,sessions:s.sessions,decisions:s.decisions,failures:s.failures,avg:s.latency.avg??'—'}));
  const reasons=Object.entries(s.actions.skippedReasons).slice(0,3).map(([k,v])=>`${k} ${v}`).join('，');
  line(tr('logActions',{accepted:s.actions.accepted,waits:s.actions.waits,skipped:s.actions.skipped,reasons:reasons?`（${reasons}）`:''}));
+ if(s.commands?.count)line(tr('logCommands',{count:s.commands.count,avg:s.commands.latencyAvg??'—',rejected:s.commands.rejected,executed:s.commands.executed,notExecuted:s.commands.notExecuted,auto:s.commands.autoDefense}));
  for(const [id,g] of Object.entries(s.groups))line(tr('logGroupLine',{id,asked:g.asked,rate:g.waitRate,options:g.avgOptions,confidence:g.avgConfidence}));
 }
 for(const [id,lang] of [['lang-zh','zh-CN'],['lang-en','en']])$(id).addEventListener('click',()=>{language=lang;localStorage.dashboardLanguage=lang;translate();});

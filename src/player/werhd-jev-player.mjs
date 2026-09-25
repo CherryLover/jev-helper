@@ -3,7 +3,7 @@ import { buildBrief, formSquads, squadUnits, sameIntent } from "./werhd-jev-comm
 import { assessStrategy, investmentGroups, chooseBuildingSite, chooseRallySite, weaponEffectiveness, effectiveness, infantryProfile, scoutScore, currentWeapon as combatWeapon, activeWeapons, canFireAt, baseThreats, ATTACK_FORCE_SIZE, ATTACK_AA_ESCORTS, vehicleOptions } from "./werhd-jev-strategy.mjs";
 import { updateCamera } from "./werhd-jev-camera.mjs";
 import { refreshCatalog, isDecoration } from "./werhd-jev-catalog.mjs";
-import { trackObjective } from "./werhd-jev-objective.mjs";
+import { trackObjective, isGuardedByObjective } from "./werhd-jev-objective.mjs";
 // Ordinary page-side player: every observation and command uses window.werhd.
 // Bundled into the browser extension; transport and credentials live outside the game page.
 
@@ -126,6 +126,8 @@ function roleOf(rule) {
 // Infantry-only armies: above this much money the foot cap rises, and above the second amount
 // training is automatic until the cap.
 export const RICH_INFANTRY_CREDITS = 3000, RICH_INFANTRY_CAP = 40, RICH_INFANTRY_SPEND = 5000;
+// Any army: above RICH_SPEND credits and below RICH_ARMY_CAP units, a declined combat unit is trained anyway.
+export const RICH_SPEND = 5000, RICH_ARMY_CAP = 40;
 // Recent answers per decision group, with the loss / kill totals at the time, so a repeated choice
 // that produced nothing can be shown back to the model and demoted.
 export const RECENT_LIMIT = 8, STALE_REPEATS = 4, STALE_REMOVE = 6;
@@ -414,8 +416,9 @@ export function rememberEnemyBuildings(api, catalog, memory, enemies) {
 // state.objectiveTarget for the model.
 export function objectiveState(api, catalog, memory, base, state) {
   const objective = trackObjective(api, catalog, memory, base?.tile);
-  state.objectiveTarget = objective ? { id: objective.id, name: objective.name, label: objective.label, x: objective.x, y: objective.y, lastSeenTick: objective.lastSeen, visible: !!objective.visible, done: !!objective.done, captured: !!objective.captured }
-    : memory.objective ? { found: false, keywords: memory.objectiveKeys?.words ?? [],
+  state.objectiveTarget = objective ? { id: objective.id, name: objective.name, label: objective.label, x: objective.x, y: objective.y, lastSeenTick: objective.lastSeen, visible: !!objective.visible, done: !!objective.done, captured: !!objective.captured,
+    ...(objective.mode === "capture" ? { mode: "capture", ...(objective.lost ? { lost: true } : {}) } : {}) }
+    : memory.objective ? { found: false, keywords: [...(memory.objectiveKeys?.words ?? []), ...(memory.objectiveKeys?.capture ?? [])],
       // What the visible buildings are actually called, so an unmatched objective can be fixed from a report.
       seen: [...new Set((api.units("hostile") ?? []).filter((u) => u.type === api.ObjectType.Building).map((u) => `${catalog[u.name]?.label ?? u.name}/${u.name}`))].slice(0, 30) } : null;
   return objective;
@@ -707,7 +710,8 @@ export function candidateGroups(api, catalog, snapshot, memory) {
   // Small local models read only the start of a question: objective and readiness go first, the
   // escalation note is one short sentence at the end.
   const where = (t) => `(${t.x},${t.y})`;
-  const objectiveNote = memory.objective ? `MISSION OBJECTIVE: ${memory.objective} ${objectiveTarget ? `Target: ${objectiveTarget.label} #${objectiveTarget.id} at ${where(objectiveTarget)}. ` : objective?.captured ? `Target ${objective.label} captured. ` : objective?.done ? `Target ${objective.label} destroyed. ` : "Target not found yet. "}` : "";
+  const captureMission = objective?.mode === "capture";
+  const objectiveNote = memory.objective ? `MISSION OBJECTIVE: ${memory.objective} ${objectiveTarget ? captureMission ? `CAPTURE target: ${objectiveTarget.label} #${objectiveTarget.id} at ${where(objectiveTarget)}; never attack it, clear the defenses around it for the engineer. ` : `Target: ${objectiveTarget.label} #${objectiveTarget.id} at ${where(objectiveTarget)}. ` : objective?.captured ? `Target ${objective.label} captured. ` : objective?.lost ? `Target ${objective.label} was destroyed; the capture failed. ` : objective?.done ? `Target ${objective.label} destroyed. ` : "Target not found yet. "}` : "";
   const readyNote = state.forceReadiness.ready
     ? `Force READY (${state.forceReadiness.reason}): choose a supplied attack now.`
     : `Force not ready (${state.forceReadiness.reason}); ${readiness.threshold} combat units needed, ${readiness.combatUnits} exist.`;
@@ -731,7 +735,8 @@ export function candidateGroups(api, catalog, snapshot, memory) {
     // The objective is offered whatever the force size: the player asked for it. It comes first,
     // except that a threatened base is defended first. It is automatic only when the force is ready
     // (or the stall rule applies): otherwise it would feed small groups in one after another.
-    const offerObjective = () => objectiveTarget && tactics(
+    // A capture target is taken by an engineer (special groups), never attacked.
+    const offerObjective = () => objectiveTarget && !captureMission && tactics(
       `objective_${objectiveTarget.id}`,
       `OBJECTIVE: destroy ${objectiveTarget.label} #${objectiveTarget.id} ${objectiveTarget.visible ? "at" : "last seen at"} ${where(objectiveTarget)} with ${ids.length} units.`,
       {
@@ -782,7 +787,9 @@ export function candidateGroups(api, catalog, snapshot, memory) {
     // Flags, lamp posts and other decorations owned by the enemy house are not targets; the
     // objective has its own option above.
     const structures = enemies.filter((e) => e.type === api.ObjectType.Building && !isDecoration(catalog[e.name], e.name));
-    const candidates = structures.filter((e) => e.id !== objectiveTarget?.id && !catalog[e.name]?.wall);
+    // Buildings the objective says to protect or capture are never assault targets: 0.7.2 offered the
+    // Battle Lab it was told to capture as an assault, and the mission was lost when it fell.
+    const candidates = structures.filter((e) => e.id !== objectiveTarget?.id && !catalog[e.name]?.wall && !isGuardedByObjective(memory.objective, catalog[e.name], e.name));
     const hitsGround = (e) => activeWeapons(e, catalog).some((w) => (w.damage ?? 0) > 0 && w.ag !== false);
     const antiAirOnly = (e) => !hitsGround(e) && activeWeapons(e, catalog).some((w) => (w.damage ?? 0) > 0 && w.aa);
     // Every nearby defense that can shoot at ground troops gets its own option: a road lined with
@@ -801,6 +808,8 @@ export function candidateGroups(api, catalog, snapshot, memory) {
     const rank = (e) => { const r = catalog[e.name] ?? {}; return antiAirOnly(e) ? 5 : r.yard ? 0 : r.factory ? 1 : r.refinery ? 2 : r.power > 0 ? 3 : 4; };
     const others = candidates.filter((e) => !hitsGround(e)).sort((a, b) => rank(a) - rank(b) || gap(a) - gap(b));
     const offered = [...others.slice(0, Math.max(cap === MAX_ASSAULTS ? 3 : 2, cap - defenses.length)), ...defenses];
+    // A capture mission is won by the engineer reaching the target: the defenses around it come first.
+    if (captureMission) offered.sort((a, b) => Number(guardsObjective(b) && hitsGround(b)) - Number(guardsObjective(a) && hitsGround(a)));
     if (ready && !threatening.length)
       for (const enemy of offered)
         tactics(
@@ -924,6 +933,13 @@ export function candidateGroups(api, catalog, snapshot, memory) {
   if (assessment.level) {
     const note = ` ESCALATION ${assessment.level}: ground assaults are failing (${assessment.reason}). Bring this arm to bear on the same target now instead of leaving it idle.`;
     for (const id of ["aircraft", "navy", "garrison", "engineering", "transport"]) if (groups[id]) groups[id].instructions += note;
+  }
+  // Money piling up while the model keeps answering "wait": 0.7.2 (Battle Lab mission) was offered a
+  // Rhino tank 251 times, credits rose to 14,000 and the army shrank from 19 to 6. Above this much
+  // money the first combat unit on offer is trained automatically after two declines.
+  if (state.self.credits >= RICH_SPEND && allArmy.length < RICH_ARMY_CAP) for (const id of ["vehicles", "infantry"]) {
+    const entry = Object.entries(groups[id]?.actions ?? {}).find(([k, a]) => k !== "wait" && a?.type === "produce" && !catalog[a.name]?.harvester && !catalog[a.name]?.engineer && (catalog[a.name]?.weapon?.damage ?? 0) > 0);
+    if (entry && !Number.isFinite(entry[1].auto)) entry[1].auto = 2;
   }
   historyHints(groups, memory, state, assessment);
   return groups;

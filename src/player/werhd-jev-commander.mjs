@@ -3,6 +3,7 @@
 // what the last plan achieved); the model decides the plan. See docs/commander-design.md.
 import { activeWeapons, weaponEffectiveness, canFireAt } from './werhd-jev-strategy.mjs';
 import { isDecoration, isCapturable } from './werhd-jev-catalog.mjs';
+import { isGuardedByObjective } from './werhd-jev-objective.mjs';
 
 const distance = (a, b) => Math.hypot(a.rx - b.rx, a.ry - b.ry);
 const r1 = (n) => Math.round(n * 10) / 10;
@@ -179,8 +180,12 @@ export function buildBrief(api, catalog, snapshot, memory) {
   const objective = memory.objective ? { text: memory.objective, target: s.objectiveTarget ?? null } : null;
   const legal = {
     squads: squadView.map((q) => q.id),
-    attackTargets: [...enemyUnits.map((e) => e.id), ...enemyBuildings.map((b) => b.id), ...remembered.map((k) => k.id)],
-    houses: houses.map((h) => h.id), huts: huts.map((h) => h.id), captures: enemyBuildings.filter((b) => isCapturable(catalog[b.name], b.name)).map((b) => b.id),
+    // Buildings the objective says to protect or capture can never be attacked; a capture objective
+    // is always a legal engineer target, defended or not.
+    attackTargets: [...enemyUnits.map((e) => e.id), ...enemyBuildings.filter((b) => !isGuardedByObjective(memory.objective, catalog[b.name], b.name)).map((b) => b.id),
+      ...remembered.filter((k) => !isGuardedByObjective(memory.objective, catalog[k.type], k.type)).map((k) => k.id)],
+    houses: houses.map((h) => h.id), huts: huts.map((h) => h.id),
+    captures: enemyBuildings.filter((b) => isCapturable(catalog[b.name], b.name) || b.id === objectiveId && s.objectiveTarget?.mode === 'capture').map((b) => b.id),
     produce: producible.map((p) => p.id),
     mapSize: api.map.size?.() ?? null,
   };

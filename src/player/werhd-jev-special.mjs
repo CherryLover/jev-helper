@@ -202,20 +202,31 @@ export function specialGroups(api, catalog, snapshot, memory, groups) {
     .filter((c) => c.neutral ? isCapturable(catalog[c.unit.name], c.unit.name) : (!c.defended && (catalog[c.unit.name]?.refinery || catalog[c.unit.name]?.factory || catalog[c.unit.name]?.yard || catalog[c.unit.name]?.power > 0 || (catalog[c.unit.name]?.techLevel ?? 0) >= 2)))
     .sort((a, b) => Number(b.neutral) - Number(a.neutral) || Number(a.defended) - Number(b.defended) || a.dist - b.dist)
     .slice(0, 4);
+  // The player's capture objective ("使用工程师占领盟军战略实验室") comes first even when defended:
+  // the mission needs it, and waiting does not make it safer.
+  const wanted = memory.objectiveTarget?.mode === 'capture' && !memory.objectiveTarget.done ? hostile.find((u) => u.id === memory.objectiveTarget.id) : undefined;
+  if (wanted) {
+    const at = captureTargets.findIndex((c) => c.unit.id === wanted.id);
+    if (at >= 0) captureTargets.splice(at, 1);
+    captureTargets.unshift({ unit: wanted, neutral: !enemyIds.has(wanted.id), defended: armedNear(wanted.tile), objective: true, dist: Math.min(...[base, ...engineers].map((o) => distance(o.tile, wanted.tile))) });
+    captureTargets.length = Math.min(captureTargets.length, 4);
+  }
   memory.captureTargets = captureTargets.map((c) => c.unit.id);
   for (const c of captureTargets) {
     const engineer = engineers.filter((u) => idle(u, memory, tick)).sort((a, b) => distance(a.tile, c.unit.tile) - distance(b.tile, c.unit.tile))[0];
     if (!engineer || tick - (memory.specialTargets?.get(`repair_${c.unit.id}`) ?? -10000) <= 600) continue;
-    engineering(`capture_${c.unit.id}`, `${c.neutral ? 'CAPTURE (neutral)' : 'CAPTURE (enemy, undefended)'}: send engineer #${engineer.id} into ${catalog[c.unit.name]?.label ?? c.unit.name} #${c.unit.id} at (${c.unit.tile.rx},${c.unit.tile.ry}), ${Math.round(distance(engineer.tile, c.unit.tile))} tiles away${c.defended ? '; armed enemies nearby, risky' : ''}. The engineer is consumed; the building becomes ours.`,
-      { type: 'special', kind: 'capture', ids: [engineer.id], targetId: c.unit.id, order: { type: api.OrderType.Capture, target: { objectId: c.unit.id } }, auto: c.neutral && !c.defended ? 2 : c.defended ? undefined : 3 });
+    engineering(`capture_${c.unit.id}`, `${c.objective ? 'MISSION OBJECTIVE CAPTURE' : c.neutral ? 'CAPTURE (neutral)' : 'CAPTURE (enemy, undefended)'}: send engineer #${engineer.id} into ${catalog[c.unit.name]?.label ?? c.unit.name} #${c.unit.id} at (${c.unit.tile.rx},${c.unit.tile.ry}), ${Math.round(distance(engineer.tile, c.unit.tile))} tiles away${c.defended ? '; armed enemies nearby, risky' : ''}. The engineer is consumed; the building becomes ours.`,
+      { type: 'special', kind: 'capture', ids: [engineer.id], targetId: c.unit.id, order: { type: api.OrderType.Capture, target: { objectId: c.unit.id } }, auto: c.objective ? (c.defended ? 3 : 1) : c.neutral && !c.defended ? 2 : c.defended ? undefined : 3 });
   }
-  const engineersWanted = Math.min(2, captureTargets.length) + (huts.length && bridgeUrgent ? 1 : 0);
-  if (engineersWanted > engineers.length && freeQueue(api.QueueType.Infantry) && snapshot.state.self.credits > 1800) {
-    const engineer = available.find((u) => catalog[u.name]?.engineer && afford(catalog[u.name], 1200));
+  // A defended capture objective can cost an engineer on the way in: keep two ready for it.
+  const engineersWanted = Math.min(2, captureTargets.length) + (wanted && armedNear(wanted.tile) ? 1 : 0) + (huts.length && bridgeUrgent ? 1 : 0);
+  const objectiveEngineer = wanted && engineers.length < engineersWanted;
+  if (engineersWanted > engineers.length && freeQueue(api.QueueType.Infantry) && (snapshot.state.self.credits > 1800 || objectiveEngineer)) {
+    const engineer = available.find((u) => catalog[u.name]?.engineer && afford(catalog[u.name], objectiveEngineer ? 0 : 1200));
     const first = captureTargets[0];
     if (engineer) addProduction(group('infantry', ''), { ...engineer, queue: api.QueueType.Infantry },
-      huts.length && bridgeUrgent ? `PRIORITY: train an engineer to repair the bridge (${bridgeWhy})` : first ? `OBJECTIVE: train an engineer to capture ${catalog[first.unit.name]?.label ?? first.unit.name} #${first.unit.id}${captureTargets.length > 1 ? ` and ${captureTargets.length - 1} more capturable structure${captureTargets.length > 2 ? 's' : ''}` : ''}` : 'Train one engineer for visible bridge repair',
-      undefined, { auto: (first || bridgeUrgent) && snapshot.state.self.credits >= catalog[engineer.name].cost + 1500 ? 3 : bridgeUrgent ? 3 : undefined });
+      huts.length && bridgeUrgent ? `PRIORITY: train an engineer to repair the bridge (${bridgeWhy})` : objectiveEngineer ? `MISSION OBJECTIVE: train an engineer to capture ${catalog[wanted.name]?.label ?? wanted.name} #${wanted.id}` : first ? `OBJECTIVE: train an engineer to capture ${catalog[first.unit.name]?.label ?? first.unit.name} #${first.unit.id}${captureTargets.length > 1 ? ` and ${captureTargets.length - 1} more capturable structure${captureTargets.length > 2 ? 's' : ''}` : ''}` : 'Train one engineer for visible bridge repair',
+      undefined, { auto: objectiveEngineer ? 1 : (first || bridgeUrgent) && snapshot.state.self.credits >= catalog[engineer.name].cost + 1500 ? 3 : bridgeUrgent ? 3 : undefined });
   }
   for (const bridge of bridges.slice(0, 12)) {
     const tile = { rx: bridge.x, ry: bridge.y };

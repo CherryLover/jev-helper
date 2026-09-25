@@ -141,6 +141,7 @@ const COMMANDER = [
   'Decide the plan. Reason from the cards: a unit with a shorter range than an enemy defense takes fire it cannot answer until it closes in; garrisoned infantry fire from cover;',
   'anti_air_only defenses cannot hurt ground units and only matter for aircraft; units with near-zero damage against a target class should not be sent at it;',
   'concentrate force instead of sending small groups one by one; protect the base and the economy; pursue the mission objective when one is given.',
+  'A capture objective (objective.target.mode = capture) is won by an engineer entering it: never attack it (a destroyed target fails the mission); clear the defenses around it, train engineers and send them with capture.',
   'Only use ids, squad names, unit codes and coordinates that appear in the brief. Squads you do not mention keep their current intent.',
   'Answer by calling issue_orders. Keep every reason to one short sentence and the note to one or two sentences.',
 ].join(' ');
